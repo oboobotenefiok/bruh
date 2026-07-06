@@ -1,0 +1,59 @@
+[package]
+name = "bruh"
+version = "0.1.0"
+edition = "2021"
+authors = ["oboobotenefiok"]
+description = "Background daemon and CLI tool for persistent developer memory"
+license = "MIT"
+repository = "https://github.com/oboobotenefiok/bruh"
+
+# Building as both a binary and a library (see src/main.rs and src/lib.rs) so the
+# integration tests in tests/ can pull in the crate's modules through the normal public API
+# instead of needing to be compiled as part of the binary itself.
+[[bin]]
+name = "bruh"
+path = "src/main.rs"
+
+[lib]
+name = "bruh"
+path = "src/lib.rs"
+
+# Every dependency here is pinned to an exact version (the leading "=") rather than a
+# semver range. For a hackathon build I wanted "it built and worked on my machine" to mean
+# "it builds and works the exact same way for anyone who clones the repo," not something
+# that could quietly shift under me if crates.io serves a newer patch release mid-judging.
+[dependencies]
+# Async runtime for the daemon's event loop. We only pull in the specific feature flags we
+# actually use (macros for #[tokio::main], multi-thread for the runtime itself, io-util and
+# net for the git socket, time for the poll/flush timers, signal for graceful shutdown)
+# rather than the "full" feature bundle, keeps compile times down.
+tokio = { version = "=1.35.1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "signal"] }
+# HTTP client for talking to Cognee and the LLM provider APIs. rustls-tls instead of the
+# default openssl-based TLS backend so we don't need a system OpenSSL install, one less
+# thing that can go wrong on a machine we don't control. "blocking" is included just for
+# init.rs's synchronous API-key validation check, everything else uses the async client.
+reqwest = { version = "=0.11.22", features = ["json", "multipart", "rustls-tls", "blocking"], default-features = false }
+serde = { version = "=1.0.193", features = ["derive"] }
+serde_json = "=1.0.108"
+# Timestamps everywhere in the event schema, with the "serde" feature so DateTime<Utc>
+# fields serialize cleanly without us having to write custom (de)serializers.
+chrono = { version = "=0.4.31", features = ["serde"] }
+# Lets ExtractorBackend (discovery/extractor.rs) be an async trait with dyn dispatch, which
+# stable Rust doesn't support natively yet.
+async-trait = "=0.1.74"
+anyhow = "=1.0.75"
+log = "=0.4.20"
+env_logger = "=0.10.1"
+# Used for SHELL-003's command exclusion patterns and a couple of small parsing spots.
+regex = "=1.10.2"
+url = "=2.4.1"
+# Currently unused directly but kept as a transitive-pin, some versions of our other deps
+# expect indexmap in the dependency tree and this keeps the lockfile stable across builds.
+indexmap = "=2.2.6"
+# Pretty table rendering for bruh stats
+prettytable-rs = "=0.10.0"
+
+[dev-dependencies]
+# Only used by tests, gives us real temp files/dirs for the cursor and buffer round-trip
+# tests instead of having to fake a filesystem.
+tempfile = "=3.8.1"

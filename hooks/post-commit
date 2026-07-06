@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# bruh post-commit hook — GIT-NEW-001: NEVER blocks git commit.
+# Delivers commit data to the daemon via Unix socket (Unix) or drop-file (Windows/fallback).
+# Every failure path exits 0 silently.
+
+BRUH_DATA_DIR="${LOCALAPPDATA:-$HOME/.local/share/bruh}"
+SOCKET="$HOME/.local/share/bruh/git.sock"
+DROP_FILE="$BRUH_DATA_DIR/git_events.ndjson"
+
+{
+    HASH=$(git rev-parse HEAD 2>/dev/null)              || exit 0
+    MSG=$(git log -1 --format="%s" 2>/dev/null)         || exit 0
+    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
+    FILES=$(git diff-tree --no-commit-id -r --name-only HEAD 2>/dev/null \
+            | tr '\n' ',' | sed 's/,$//')
+    DIFF=$(git show --stat --format="" HEAD 2>/dev/null | tail -1 | tr -d '"')
+    DIR=$(git rev-parse --show-toplevel 2>/dev/null)    || DIR="$PWD"
+
+    PAYLOAD=$(printf '{"hash":"%s","message":"%s","branch":"%s","files_changed":["%s"],"diff_summary":"%s","working_directory":"%s"}' \
+        "$HASH" \
+        "$(echo "$MSG"   | sed 's/"/\\"/g')" \
+        "$BRANCH" \
+        "$(echo "$FILES" | sed 's/,/","/g')" \
+        "$(echo "$DIFF"  | sed 's/"/\\"/g')" \
+        "$(echo "$DIR"   | sed 's/"/\\"/g')")
+
+    # Try Unix socket first (fast, real-time on Unix)
+    if [ -S "$SOCKET" ] && command -v socat >/dev/null 2>&1; then
+        echo "$PAYLOAD" | timeout 2 socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null && exit 0
+    fi
+
+    # Fallback: write to drop-file (works on Windows Git Bash and when socket unavailable)
+    mkdir -p "$(dirname "$DROP_FILE")" 2>/dev/null || true
+    echo "$PAYLOAD" >> "$DROP_FILE" 2>/dev/null || true
+
+} 2>/dev/null || true
+
+exit 0
