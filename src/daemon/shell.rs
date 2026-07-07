@@ -510,7 +510,11 @@ mod tests {
         // zsh's INC_APPEND_HISTORY) fires, and the command finally lands on disk.
         std::fs::write(&history_path, "cargo build --release\n").unwrap();
         let events = rt.block_on(poll_shell_history(&config)).unwrap();
-        assert_eq!(events.len(), 1, "poller correctly picks up newly flushed content");
+        assert_eq!(
+            events.len(),
+            1,
+            "poller correctly picks up newly flushed content"
+        );
         if let Event::ShellCommand(sc) = &events[0] {
             assert_eq!(sc.command, "cargo build --release");
         } else {
@@ -521,7 +525,11 @@ mod tests {
         // make sure the byte-cursor is doing its job and we don't re-ingest the same line
         // twice.
         let events = rt.block_on(poll_shell_history(&config)).unwrap();
-        assert_eq!(events.len(), 0, "cursor should prevent re-reading the same bytes");
+        assert_eq!(
+            events.len(),
+            0,
+            "cursor should prevent re-reading the same bytes"
+        );
     }
 
     #[test]

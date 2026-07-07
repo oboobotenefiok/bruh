@@ -226,7 +226,11 @@ pub fn print_stats_box(lines: &[(&str, String)]) {
     for (label, value) in lines {
         // Apply markdown rendering to the value
         let rendered_value = markdown_to_terminal(&value);
-        println!("  {}  {}", cyan(&format!("{:<28}", label)), bold(&rendered_value));
+        println!(
+            "  {}  {}",
+            cyan(&format!("{:<28}", label)),
+            bold(&rendered_value)
+        );
     }
     println!();
     print_footer();

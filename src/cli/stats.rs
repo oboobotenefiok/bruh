@@ -69,10 +69,7 @@ fn render_stats_table(text: &str) {
                     serde_json::Value::String(s) => s.clone(),
                     other => other.to_string(),
                 };
-                table.add_row(Row::new(vec![
-                    Cell::new(label),
-                    Cell::new(&s),
-                ]));
+                table.add_row(Row::new(vec![Cell::new(label), Cell::new(&s)]));
                 has_data = true;
             }
         }

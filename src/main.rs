@@ -103,11 +103,10 @@ async fn run() -> Result<()> {
             let query_clean = query.replace("--raw", "").trim().to_string();
 
             //  The cli::query::run() then gets the parameters passed to it: the cleaned query and the state of being raw or not(true or false).
-// We will pass this to cognee in query run then pass the response to the printer in cli output for formatting.
-// Literally, the raw state is not used by the run itself but the cli ouput printer. This only serves as a portal to pass it as a pair on each command entry.
+            // We will pass this to cognee in query run then pass the response to the printer in cli output for formatting.
+            // Literally, the raw state is not used by the run itself but the cli ouput printer. This only serves as a portal to pass it as a pair on each command entry.
 
-
-// QUICK ONE: I add some comments as the project grows. Just figure it out.
+            // QUICK ONE: I add some comments as the project grows. Just figure it out.
             return cli::query::run(&query_clean, raw).await;
         }
     }
@@ -131,7 +130,7 @@ async fn run() -> Result<()> {
 
             // Just like we did with --force in init, we do same with daemon options for --status
             if args.iter().any(|a| a == "--status") {
-            // This function will literally just tell us if the daemon is actively working or not then close the program(return).
+                // This function will literally just tell us if the daemon is actively working or not then close the program(return).
                 return cli::status::run().map_err(Into::into);
             }
             // Without the flag, it sets up the daemon.
@@ -141,7 +140,7 @@ async fn run() -> Result<()> {
         // Say a developer is oblivious of the natural language design, this is a provision for it to take the word "query" as an arguments
         // Wait, I just had an idea now!!! We could have a command where the user queries cognee for information then ports the response to an LLM with a custom prompt for something specific. That will be cool in future but eyes on the goal now.
         Some("query") => {
-        // As usual, we check for the flags; here's raw and interactive.
+            // As usual, we check for the flags; here's raw and interactive.
             let raw = args.contains(&"--raw".to_string());
             let interactive = args.iter().any(|a| a == "--interactive" || a == "-i");
 
@@ -154,8 +153,8 @@ async fn run() -> Result<()> {
                     .filter(|a| !a.starts_with("--"))
                     .map(|s| s.as_str())
                     .collect();
-                    // If there's nothing after the flags, it means we don't have a query so we print a useful guide.
-                    // Note that the bail macro in anyhow has the return function embedded in it so the program will print the guideline, and exit.
+                // If there's nothing after the flags, it means we don't have a query so we print a useful guide.
+                // Note that the bail macro in anyhow has the return function embedded in it so the program will print the guideline, and exit.
                 if q.is_empty() {
                     anyhow::bail!("Usage: bruh query <text>  |  bruh query --interactive");
                 }
@@ -165,7 +164,6 @@ async fn run() -> Result<()> {
                 cli::query::run(&q.join(" "), raw).await?;
             }
         }
-        
 
         Some("forget") => {
             // We state here that the none we need for the before and session is of an advanced String Type but default the value to none while keeping them mutable.
@@ -206,11 +204,10 @@ async fn run() -> Result<()> {
                     learn = args.get(i).cloned();
                 }
                 i += 1;
-            } 
+            }
             cli::managers::run(learn).await?;
         }
         // The four wise men below are straightforward, aren't they?
-        
         Some("stats") | Some("--stats") => {
             cli::stats::run().await?;
         }
@@ -221,12 +218,11 @@ async fn run() -> Result<()> {
         Some("explain") => {
             cli::explain::run().await?;
         }
-        
+
         Some("improve") => {
             cli::improve::run().await?;
         }
 
-        
         Some("watch") => {
             // We take the third argument(index[2]) and pass it to the watch runner as a reference.
             // The fun fact here is that we cannot take ownership of a vec index according to Rust rules right? So we reference it! Is that contextually sound here?
@@ -244,7 +240,7 @@ async fn run() -> Result<()> {
             let value = args.get(4).map(|s| s.as_str());
             cli::config_cli::run(sub, key, value)?;
         }
-        
+
         // This helps users check the version of the package and git hash for it. It will be helpful in future for debugging and security verifications.
         Some("version") | Some("--version") | Some("-v") => {
             println!(
@@ -261,17 +257,13 @@ async fn run() -> Result<()> {
         }
         // This is where we catch-all. It's designed to be annoying when you get the commands wrong everytime. What we do is, whether the user calls the program with no arguments or with misunderstood queries, we print the error, and the help message. Then exit the program with a value that's NOT 0.
         Some(unknown) => {
-            eprintln!(
-                "{} {}",
-                cli::output::orange("Unknown command:"),
-                unknown
-            );
+            eprintln!("{} {}", cli::output::orange("Unknown command:"), unknown);
             print_help();
             std::process::exit(1);
         }
     }
-        // Whew!!! That's it for the Parser. Now let's get the data flowing!
-        
+    // Whew!!! That's it for the Parser. Now let's get the data flowing!
+
     Ok(()) // When the function ends successfully, it returns this to satisfy the return contract.
 }
 
@@ -287,7 +279,11 @@ fn print_help() {
         println!("  {}  {}", green(&format!("{:<36}", cmd)), dim(desc));
     };
 
-    println!("{} {}\n", bold(&cyan("bruh")), dim("— persistent developer memory"));
+    println!(
+        "{} {}\n",
+        bold(&cyan("bruh")),
+        dim("— persistent developer memory")
+    );
     println!("{}", bold("USAGE:"));
     row("bruh <query>", "Natural language memory query (shorthand)");
     println!("  {} [options]\n", bold(&cyan("bruh <command>")));
@@ -297,7 +293,10 @@ fn print_help() {
     row("daemon --status", "Show daemon health");
     row("query <text> [--raw] [--interactive]", "Query memory");
     row("explain", "Session handoff brief for current directory");
-    row("watch <cmd> [args...]", "Run command; surface error history on failure");
+    row(
+        "watch <cmd> [args...]",
+        "Run command; surface error history on failure",
+    );
     row("stats", "Productivity summary");
     row("improve", "Trigger Cognee graph enrichment");
     row("forget --before <date>", "Forget events before date");
@@ -311,10 +310,26 @@ fn print_help() {
     row("version", "Show version");
     println!();
     println!("{}", bold("ENV VARS:"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "BRUH_COGNEE_API_KEY")), dim("Override Cognee API key"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "BRUH_POLL_INTERVAL")), dim("Override poll interval (seconds)"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "NO_COLOR")), dim("Disable ANSI colors"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "RUST_LOG")), dim("Log level (info, debug, warn)"));
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "BRUH_COGNEE_API_KEY")),
+        dim("Override Cognee API key")
+    );
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "BRUH_POLL_INTERVAL")),
+        dim("Override poll interval (seconds)")
+    );
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "NO_COLOR")),
+        dim("Disable ANSI colors")
+    );
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "RUST_LOG")),
+        dim("Log level (info, debug, warn)")
+    );
 }
 
 // There are no tests to run here for now. Let's see how it goes towards the end of the journey.

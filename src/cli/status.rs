@@ -68,7 +68,11 @@ pub fn run() -> Result<()> {
     }
 
     if let Some(st) = v["last_flush_status"].as_str() {
-        let formatted = if st == "success" { green(st) } else { orange(st) };
+        let formatted = if st == "success" {
+            green(st)
+        } else {
+            orange(st)
+        };
         println!("  {}  Flush status:      {}", dim("│"), formatted);
     }
 

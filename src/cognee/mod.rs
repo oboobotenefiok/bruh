@@ -21,13 +21,13 @@ pub use query::recall;
 // change it, and it's structurally impossible for ingest and recall to drift apart again.
 pub const DATASET_NAME: &str = "bruh_activity";
 
-// For error propagation, we have this. 
+// For error propagation, we have this.
 // Usually we need it in every file that uses it.
 use anyhow::{Context, Result};
 // And for our json
 use serde_json::Value;
 use std::sync::OnceLock;
-// 
+//
 pub struct CogneeClient {
     client: reqwest::Client,
     api_key: String,
@@ -49,12 +49,12 @@ static SHARED_CLIENT: OnceLock<CogneeClient> = OnceLock::new();
 /// that finishes in 2s doesn't wait around, this only bounds the worst case.
 const REQUEST_TIMEOUT_SECS: u64 = 120;
 
-// We write custom functions for the CogneeClient struct 
+// We write custom functions for the CogneeClient struct
 impl CogneeClient {
-// This creates a new instance of it. It accepts the api_key and api url while attempting to build the cliemt from the builder with a check of 30 seconds.
+    // This creates a new instance of it. It accepts the api_key and api url while attempting to build the cliemt from the builder with a check of 30 seconds.
     pub fn new(api_key: String, api_url: String) -> Self {
         Self {
-// We'll talk more abou this line
+            // We'll talk more abou this line
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
                 // COGNEE-013b: unwrap_or_default() used to silently fall back to a
@@ -84,9 +84,9 @@ impl CogneeClient {
     }
 
     pub fn from_config() -> Result<Self> {
-// We load values from the configuration file via the cli::Config::load function. Context is a method for error or more info for anyhow. This will return as a Struct we can access.
+        // We load values from the configuration file via the cli::Config::load function. Context is a method for error or more info for anyhow. This will return as a Struct we can access.
         let config = crate::cli::Config::load().context("Failed to load config")?;
-// We access to find if there is an api key for cognee otherwise we bail it. Remember strictly that the anyhow bail has a return implementation in it so the program will crash with the error message. In this scenario, we check if it's empty.
+        // We access to find if there is an api key for cognee otherwise we bail it. Remember strictly that the anyhow bail has a return implementation in it so the program will crash with the error message. In this scenario, we check if it's empty.
         if config.cognee_api_key.is_empty() {
             anyhow::bail!(
                 "Cognee API key is not set.\n\
@@ -94,7 +94,7 @@ impl CogneeClient {
                  Get a key at: https://app.cognee.ai"
             );
         }
-// If it's not empty, we send the api key and api url to the new constructor function above, that will create a new CogneeClient and wrap it in Ok to be sent to the calling program.
+        // If it's not empty, we send the api key and api url to the new constructor function above, that will create a new CogneeClient and wrap it in Ok to be sent to the calling program.
         Ok(Self::new(config.cognee_api_key, config.cognee_api_url))
     }
 
@@ -195,7 +195,7 @@ impl CogneeClient {
                     url
                 )
             })?;
-// We can now take the value of the response and do some stuff with it like:.. We'll test on Wednesday when the Cloud is live.
+            // We can now take the value of the response and do some stuff with it like:.. We'll test on Wednesday when the Cloud is live.
             let status = resp.status();
             match Self::classify_status(status, attempt) {
                 StatusAction::Success => {
@@ -315,4 +315,4 @@ enum StatusAction {
     Fail,
 }
 
-use std::time::Duration; // Let this be here for now. It doesn't hurt.		
+use std::time::Duration; // Let this be here for now. It doesn't hurt.

@@ -45,10 +45,22 @@ fn test_command_hash_differs_for_different_commands() {
 #[test]
 fn test_classify_error_variants() {
     use bruh::events::classify_error;
-    assert_eq!(classify_error("linker 'cc' not found"), Some("linker_error".into()));
-    assert_eq!(classify_error("permission denied"), Some("permission_denied".into()));
-    assert_eq!(classify_error("cannot find -lssl"), Some("missing_dependency".into()));
-    assert_eq!(classify_error("error[E0499]: cannot borrow"), Some("compile_error".into()));
+    assert_eq!(
+        classify_error("linker 'cc' not found"),
+        Some("linker_error".into())
+    );
+    assert_eq!(
+        classify_error("permission denied"),
+        Some("permission_denied".into())
+    );
+    assert_eq!(
+        classify_error("cannot find -lssl"),
+        Some("missing_dependency".into())
+    );
+    assert_eq!(
+        classify_error("error[E0499]: cannot borrow"),
+        Some("compile_error".into())
+    );
     assert_eq!(classify_error(""), None);
 }
 
@@ -66,15 +78,15 @@ fn test_ndjson_round_trip() {
     use chrono::Utc;
 
     let event = Event::ShellCommand(ShellCommandEvent {
-        timestamp:    Utc::now(),
-        directory:    "/tmp/test".into(),
-        command:      "cargo build".into(),
-        exit_code:    Some(0),
-        output:       None,
-        duration_ms:  Some(1234),
-        session_id:   Some("session_123".into()),
+        timestamp: Utc::now(),
+        directory: "/tmp/test".into(),
+        command: "cargo build".into(),
+        exit_code: Some(0),
+        output: None,
+        duration_ms: Some(1234),
+        session_id: Some("session_123".into()),
         command_hash: Some("abc123".into()),
-        error_type:   None,
+        error_type: None,
     });
 
     let json = serde_json::to_string(&event).unwrap();
@@ -96,14 +108,14 @@ fn test_package_install_event_serde() {
     use chrono::Utc;
 
     let event = Event::PackageInstall(PackageInstallEvent {
-        timestamp:         Utc::now(),
-        manager:           "apt".into(),
-        manager_type:      ManagerType::Bootstrapped,
-        package:           "libssl-dev".into(),
-        version:           Some("1.0.2".into()),
-        trigger_command:   Some("cargo build".into()),
+        timestamp: Utc::now(),
+        manager: "apt".into(),
+        manager_type: ManagerType::Bootstrapped,
+        package: "libssl-dev".into(),
+        version: Some("1.0.2".into()),
+        trigger_command: Some("cargo build".into()),
         exit_code_trigger: Some(1),
-        session_id:        Some("session_456".into()),
+        session_id: Some("session_456".into()),
         working_directory: Some("/home/user/project".into()),
     });
 
@@ -128,14 +140,14 @@ fn test_git_commit_event_serde() {
     use chrono::Utc;
 
     let event = Event::GitCommit(GitCommitEvent {
-        timestamp:         Utc::now(),
-        hash:              "abc1234".into(),
-        message:           "fix: add libssl-dev".into(),
-        branch:            "main".into(),
-        files_changed:     vec!["Dockerfile".into()],
-        session_id:        Some("session_789".into()),
+        timestamp: Utc::now(),
+        hash: "abc1234".into(),
+        message: "fix: add libssl-dev".into(),
+        branch: "main".into(),
+        files_changed: vec!["Dockerfile".into()],
+        session_id: Some("session_789".into()),
         working_directory: Some("/home/user/project".into()),
-        diff_summary:      Some("1 file changed, +1".into()),
+        diff_summary: Some("1 file changed, +1".into()),
     });
 
     let json = serde_json::to_string(&event).unwrap();
@@ -159,7 +171,8 @@ fn test_corrupt_ndjson_skipped() {
         r#"{"event_type":"shell_command","timestamp":"2024-01-01T00:00:01Z","directory":"/","command":"pwd","exit_code":0,"session_id":null,"command_hash":null,"error_type":null,"output":null,"duration_ms":null}"#,
     ];
 
-    let valid: Vec<_> = lines.iter()
+    let valid: Vec<_> = lines
+        .iter()
         .filter_map(|l| serde_json::from_str::<bruh::events::Event>(l).ok())
         .collect();
 

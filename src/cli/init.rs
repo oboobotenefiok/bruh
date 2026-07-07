@@ -393,8 +393,8 @@ fn write_managed_block(
         }
     };
 
-    let mut f = std::fs::File::create(profile)
-        .with_context(|| format!("Cannot write {:?}", profile))?;
+    let mut f =
+        std::fs::File::create(profile).with_context(|| format!("Cannot write {:?}", profile))?;
     f.write_all(new_content.as_bytes())?;
     // Explicit flush even though File::write_all already goes straight to the OS without
     // any userspace buffering of its own, this is just making the intent obvious to
