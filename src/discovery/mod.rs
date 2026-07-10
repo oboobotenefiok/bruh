@@ -11,6 +11,14 @@ use crate::events::PackageManagerProfile;
 use anyhow::{Context, Result};
 use log::info;
 
+/// The package managers bruh knows how to talk to out of the box, no discovery needed.
+/// This used to exist as two separate hardcoded lists, one in daemon/discovery.rs driving
+/// the actual "is this manager unknown" runtime check, and a second in cli/managers.rs
+/// purely for the "always available" display line. Both had to be kept in sync by hand,
+/// with nothing enforcing that they actually matched. Now there's exactly one list, and
+/// both call sites read from it.
+pub const BOOTSTRAPPED_MANAGERS: &[&str] = &["apt", "pip", "npm", "cargo", "pkg", "brew"];
+
 /// DISCOVERY-009: dropped the DuckDuckGo web-search step entirely. It used to be step 1
 /// of this pipeline (search.rs, since removed), but in practice the DDG Instant Answer
 /// API is unreliable, it times out or comes back empty for most package manager names
@@ -54,9 +62,22 @@ pub async fn discover_manager(manager_name: &str) -> Result<PackageManagerProfil
         .await
         .context("LLM extraction failed")?;
 
-    register::store_profile(&profile)
+    match register::store_profile(&profile)
         .await
-        .context("Cognee store failed")?;
+        .context("Cognee store failed")?
+    {
+        register::StoreOutcome::Stored => {}
+        // This runs unattended in the background, so nobody's watching the terminal for a
+        // missed checkmark the way they would be for the explicit --learn command. A log
+        // line is the only way this is ever discoverable, without it the profile silently
+        // never makes it into Cognee and nothing says so anywhere.
+        register::StoreOutcome::NotConfigured => {
+            log::warn!(
+                "Discovered '{}' but Cognee isn't configured, skipping remote store (still caching locally)",
+                manager_name
+            );
+        }
+    }
 
     cache::save_learned_manager(&profile)?;
 

@@ -9,11 +9,15 @@
 // without an LLM key, no real-time git without the hook, etc), rather than refusing to run
 // at all.
 
-use crate::cli::output::{bold as b, dim as d, green as g, orange};
-use crate::cli::Config;
+use crate::cli::{
+    output::{bold as b, dim as d, green as g, orange},
+    Config,
+};
 use anyhow::{Context, Result};
-use std::env;
-use std::io::{self, Write};
+use std::{
+    env,
+    io::{self, Write},
+};
 
 pub fn run() -> Result<()> {
     run_with_force(false)
@@ -369,7 +373,12 @@ fn write_managed_block(
         // Cut everything from BLOCK_START to BLOCK_END (inclusive) and splice the fresh
         // block in its place, so re-running with --force updates the content in place
         // instead of leaving a stale copy above a new one.
-        let start = existing.find(BLOCK_START).expect("checked above");
+        //
+        // The expect() here is safe: we only reach this branch when already_present is
+        // true, and already_present is set from existing.contains(BLOCK_START) a few lines
+        // up, so find() on the same string for the same substring is guaranteed to return
+        // Some.
+        let start = existing.find(BLOCK_START).expect("BLOCK_START must be present, already_present just confirmed existing.contains(BLOCK_START)");
         let end = existing
             .find(BLOCK_END)
             .map(|i| i + BLOCK_END.len())
@@ -393,8 +402,8 @@ fn write_managed_block(
         }
     };
 
-    let mut f = std::fs::File::create(profile)
-        .with_context(|| format!("Cannot write {:?}", profile))?;
+    let mut f =
+        std::fs::File::create(profile).with_context(|| format!("Cannot write {:?}", profile))?;
     f.write_all(new_content.as_bytes())?;
     // Explicit flush even though File::write_all already goes straight to the OS without
     // any userspace buffering of its own, this is just making the intent obvious to

@@ -6,14 +6,18 @@
 // to talk to the data this file collects. If this loop dies, bruh stops being useful.
 
 pub mod buffer;
+// pub(crate) since it's an internal implementation detail shared across daemon submodules
+// (packages, discovery), not something outside the crate needs.
+pub(crate) mod cursor;
 mod discovery;
 mod git;
 mod packages;
-mod shell;
+// pub(crate) rather than private: cli::watch reuses exclusion_patterns()/is_excluded() from
+// here so error text captured by `bruh watch` gets the exact same secret-filtering as the
+// passive shell-history poller, one implementation, not two that could drift apart.
+pub(crate) mod shell;
 
-use crate::cli::Config;
-use crate::cognee::remember;
-use crate::events::Event;
+use crate::{cli::Config, cognee::remember, events::Event};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use log::{debug, error, info, warn};
@@ -85,6 +89,12 @@ pub async fn run() -> Result<()> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
+            // signal() only fails if the OS can't set up signal handling infrastructure at
+            // all, which in practice means something is deeply wrong with the environment,
+            // not something a retry or a fallback could paper over. A daemon that can't
+            // reliably catch SIGTERM/SIGINT has no way to ever shut down cleanly anyway, so
+            // failing loudly here at startup is more honest than limping along and hoping
+            // for the best.
             let mut term = signal(SignalKind::terminate()).expect("SIGTERM");
             let mut int = signal(SignalKind::interrupt()).expect("SIGINT");
             tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
@@ -166,7 +176,7 @@ pub async fn run() -> Result<()> {
                 }
 
                 // ── Package managers ──
-                match packages::poll_package_managers(&config).await {
+                match packages::poll_package_managers().await {
                     Ok(evs) => for mut ev in evs {
                         stamp_session(&mut ev, &session_id);
                         event_queue.push(ev);
@@ -225,7 +235,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
 
-                write_health(start.elapsed().as_secs(), &event_queue,
+                write_health(start.elapsed().as_secs(), event_queue.len(),
                     &last_flush_status, last_flush_time).await;
             }
         }
@@ -277,38 +287,56 @@ async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option
 // complexity for a status check nobody needs sub-second freshness on.
 async fn write_health(
     uptime: u64,
-    queue: &[Event],
+    queue_len: usize,
     flush_status: &str,
     flush_time: Option<DateTime<Utc>>,
 ) {
-    let buffered = Config::load()
-        .ok()
-        .and_then(|c| std::fs::read_to_string(&c.offline_buffer_path).ok())
-        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0);
-    let learned = crate::discovery::cache::load_learned_managers()
-        .map(|m| m.len())
-        .unwrap_or(0);
+    // Config::load(), load_learned_managers(), and the buffer line count below are all
+    // synchronous, std::fs-backed calls, and this whole function runs once per flush tick
+    // (every batch_flush_interval_seconds) inside the daemon's main async loop. Bundling
+    // them into one spawn_blocking closure moves the whole sequence onto tokio's dedicated
+    // blocking thread pool, so a slow read on constrained storage doesn't stall the worker
+    // thread the shutdown-signal check or another poller is trying to use at the same time.
+    let flush_status = flush_status.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let buffered = Config::load()
+            .ok()
+            .and_then(|c| std::fs::read_to_string(&c.offline_buffer_path).ok())
+            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
+        let learned = crate::discovery::cache::load_learned_managers()
+            .map(|m| m.len())
+            .unwrap_or(0);
 
-    let health = json!({
-        "status": "running",
-        "uptime_seconds": uptime,
-        "events_queued": queue.len(),
-        "last_flush_time": flush_time.map(|t| t.to_rfc3339()),
-        "last_flush_status": flush_status,
-        "buffered_events": buffered,
-        // 6 is the count of package managers we know about out of the box without needing
-        // discovery at all (npm, cargo, pip, etc), plus whatever's been learned on top.
-        "managers_known": 6 + learned,
-        "managers_learned": learned,
-    });
+        let health = json!({
+            "status": "running",
+            "uptime_seconds": uptime,
+            "events_queued": queue_len,
+            "last_flush_time": flush_time.map(|t| t.to_rfc3339()),
+            "last_flush_status": flush_status,
+            "buffered_events": buffered,
+            // 6 is the count of package managers we know about out of the box without
+            // needing discovery at all (npm, cargo, pip, etc), plus whatever's been
+            // learned on top.
+            "managers_known": 6 + learned,
+            "managers_learned": learned,
+            // Written fresh on every single call to write_health, which fires once per
+            // flush tick. `bruh daemon --status` compares this against the current time
+            // to tell a live daemon apart from a stale health.json left behind by a hard
+            // kill (SIGKILL, an OOM kill, a crash), none of which give cleanup_sockets()
+            // a chance to run and remove the file. Without this, a dead daemon's last
+            // snapshot would read as "running" forever.
+            "as_of": Utc::now().to_rfc3339(),
+        });
 
-    if let Ok(path) = Config::health_file_path() {
-        if let Some(p) = path.parent() {
-            let _ = std::fs::create_dir_all(p);
+        if let Ok(path) = Config::health_file_path() {
+            if let Some(p) = path.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            let _ = std::fs::write(&path, health.to_string());
         }
-        let _ = std::fs::write(&path, health.to_string());
-    }
+    })
+    .await;
 }
 
 // Removes the health file and the git socket on a clean shutdown, so a stale file from a

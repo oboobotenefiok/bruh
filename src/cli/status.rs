@@ -6,9 +6,19 @@
 // even if something's gone wrong enough that the daemon can't respond to a live query,
 // as long as the file's still there from its last successful tick.
 
-use crate::cli::output::{bold, dim, green, orange, print_footer, print_header};
-use crate::cli::Config;
+use crate::cli::{
+    output::{bold, dim, fmt_datetime, fmt_time, green, orange, print_footer, print_header},
+    Config,
+};
 use anyhow::Result;
+use chrono::{DateTime, Utc};
+
+// A daemon in good health rewrites health.json every flush tick, so a snapshot older than
+// a few flush intervals almost certainly means the process died without going through
+// cleanup_sockets() (a hard kill, an OOM kill, a crash), not that it's just running quietly.
+// Multiplying by 3 gives it enough slack to ride out one or two slow/failed flush cycles
+// without crying wolf on a daemon that's actually fine.
+const STALE_MULTIPLIER: u64 = 3;
 
 pub fn run() -> Result<()> {
     let health_path = Config::health_file_path()?;
@@ -36,12 +46,60 @@ pub fn run() -> Result<()> {
     // partially written or slightly-out-of-date health.json (say, from an older bruh
     // version with fewer fields) just shows fewer status lines instead of erroring out.
     let status = v["status"].as_str().unwrap_or("unknown");
-    let status_icon = match status {
-        "running" => green("●"),
+
+    // A daemon that died without a clean shutdown leaves its last real health.json behind
+    // forever, since nothing else ever deletes it. Comparing "as_of" (written fresh on every
+    // flush tick) against right now is how we tell that stale snapshot apart from a genuinely
+    // live daemon, rather than trusting the file's mere existence at face value.
+    let flush_interval = Config::load()
+        .map(|c| c.batch_flush_interval_seconds)
+        .unwrap_or(240);
+    let stale_after = flush_interval.saturating_mul(STALE_MULTIPLIER);
+    let is_stale = v["as_of"]
+        .as_str()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|as_of| {
+            let age = Utc::now().signed_duration_since(as_of.with_timezone(&Utc));
+            age.num_seconds() > stale_after as i64
+        })
+        // No "as_of" at all (an older health.json written before this field existed) can't
+        // be judged for freshness one way or the other, so we don't flag it as stale.
+        .unwrap_or(false);
+
+    let status_icon = match (status, is_stale) {
+        ("running", false) => green("●"),
         _ => orange("●"),
     };
 
-    println!("  {}  Status:            {}", status_icon, bold(status));
+    let status_label = if is_stale {
+        format!("{} (stale)", status)
+    } else {
+        status.to_string()
+    };
+    println!(
+        "  {}  Status:            {}",
+        status_icon,
+        bold(&status_label)
+    );
+
+    if is_stale {
+        println!(
+            "  {}  {}",
+            dim("│"),
+            orange("Last update looks old, the daemon may have stopped responding.")
+        );
+    }
+
+    if let Some(checked_at) = v["as_of"]
+        .as_str()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+    {
+        println!(
+            "  {}  Checked at:        {}",
+            dim("│"),
+            fmt_time(&checked_at.with_timezone(&Utc))
+        );
+    }
 
     if let Some(uptime) = v["uptime_seconds"].as_u64() {
         let h = uptime / 3600;
@@ -63,12 +121,23 @@ pub fn run() -> Result<()> {
         println!("  {}  Buffered (offline):{}", dim("│"), label);
     }
 
-    if let Some(ts) = v["last_flush_time"].as_str() {
-        println!("  {}  Last flush:        {}", dim("│"), ts);
+    if let Some(ts) = v["last_flush_time"]
+        .as_str()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+    {
+        println!(
+            "  {}  Last flush:        {}",
+            dim("│"),
+            fmt_datetime(&ts.with_timezone(&Utc))
+        );
     }
 
     if let Some(st) = v["last_flush_status"].as_str() {
-        let formatted = if st == "success" { green(st) } else { orange(st) };
+        let formatted = if st == "success" {
+            green(st)
+        } else {
+            orange(st)
+        };
         println!("  {}  Flush status:      {}", dim("│"), formatted);
     }
 

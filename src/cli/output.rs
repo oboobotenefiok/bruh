@@ -29,13 +29,19 @@ const CYAN: &str = "\x1b[36m";
 const DEEP_ORANGE: &str = "\x1b[38;5;166m";
 
 pub fn is_color_enabled() -> bool {
+    use std::io::IsTerminal;
+
     if std::env::var("NO_COLOR").is_ok() {
         return false;
     }
-    match std::env::var("TERM") {
-        Ok(t) if t == "dumb" => false,
-        _ => true,
+    if matches!(std::env::var("TERM"), Ok(t) if t == "dumb") {
+        return false;
     }
+    // Piping output to a file or another program (`bruh query "..." > out.txt`, or
+    // `| less`) shouldn't embed raw ANSI escape codes just because the user didn't also
+    // remember to set NO_COLOR. std::io::IsTerminal has been stable since Rust 1.70, so
+    // this needs no new dependency, just a check we weren't doing before.
+    std::io::stdout().is_terminal()
 }
 
 fn c(code: &str, text: &str) -> String {
@@ -226,7 +232,11 @@ pub fn print_stats_box(lines: &[(&str, String)]) {
     for (label, value) in lines {
         // Apply markdown rendering to the value
         let rendered_value = markdown_to_terminal(&value);
-        println!("  {}  {}", cyan(&format!("{:<28}", label)), bold(&rendered_value));
+        println!(
+            "  {}  {}",
+            cyan(&format!("{:<28}", label)),
+            bold(&rendered_value)
+        );
     }
     println!();
     print_footer();

@@ -4,8 +4,7 @@
 // result to disk. But package managers evolve (install syntax changes, registries move) so
 // I don't want to trust a cached answer forever either, hence the 30 day expiry below.
 
-use crate::cli::Config;
-use crate::events::PackageManagerProfile;
+use crate::{cli::Config, events::PackageManagerProfile};
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};

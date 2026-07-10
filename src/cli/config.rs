@@ -351,6 +351,14 @@ impl Config {
             "batch_flush_interval_seconds" => Some(self.batch_flush_interval_seconds.to_string()),
             "max_buffer_size" => Some(self.max_buffer_size.to_string()),
             "daemon_log_level" => Some(self.daemon_log_level.clone()),
+            "offline_buffer_path" => Some(self.offline_buffer_path.to_string_lossy().to_string()),
+            // Showing the count rather than every regex pattern verbatim, `bruh config list`
+            // is meant to be a quick scan, not a dump. Someone who wants to see the actual
+            // patterns can open the config file directly (see the path list prints below).
+            "excluded_commands" => Some(format!(
+                "{} pattern(s) configured",
+                self.excluded_commands.len()
+            )),
             _ => None,
         }
     }

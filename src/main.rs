@@ -5,8 +5,13 @@
 // I'll be explaining every line of code contextually while building.
 // I hope this serves as a great learning point for you.
 
-// Given the warnings I will surely have through the code, I actually don't want to see anything other than actual red errors cause we're in a hackathon and time is never friendly.
-#![allow(dead_code, unused_imports, unused_variables)]
+// There used to be a blanket #![allow(dead_code, unused_imports, unused_variables)] right
+// here, added early on to keep the hackathon build quiet while things were still moving
+// fast. It's gone now. The problem with silencing those lints crate-wide is that they're
+// exactly the ones that catch a config value you parsed but forgot to wire up, or an old
+// helper nobody calls anymore, real bugs, not just noise. Anything that legitimately needs
+// to stay unused for now gets a scoped #[allow(...)] right on that item with a comment
+// explaining why, so the rest of the crate keeps the safety net intact.
 
 // Based on my project plan, these are the modules I'll primarily need for everything to be complete. I declare them using mod. If anything else comes up as I iterate, I'll add them here.
 mod cli;
@@ -16,7 +21,7 @@ mod discovery;
 mod events;
 
 // At first I wanted using thiserror crate to experiment but I've come to realise I haven't used it much before now and there's no need taking such risk. I'll stay with anyhow for now.
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use log::info;
 
 // This is the part I have a lot to talk about. First of all, there's a crate called clap, that can handle commands for us quite neatly; I've built several projects with it but this one? I refuse to use it for this project because I'm operating from a quite inferior device. It usually takes long for heavy dependencies to be compiled and sometimes I experience crashes due to RAM shortages or so. To avoid meeting that issue towards the deadline, I'll have to handroll the Parser manually in the code. I'll also do that to several other crates that would otherwise make the project a bloatware. I know this doesn't matter to the final executable as Rustc will do all the optimizations but it's the best approach now for my convenience.
@@ -40,6 +45,73 @@ const KNOWN_CMDS: &[&str] = &[
     "--help",
     "-h",
 ];
+
+// Commands that only ever take flags, never freeform positional text. Paired with each is
+// the exact set of flags that command actually recognises. This exists to catch a real
+// ambiguity in the natural-language shorthand: if someone types `bruh daemon seems stuck`
+// without quoting it, the shell hands us ["daemon", "seems", "stuck"] as three separate
+// words, and "daemon" alone is indistinguishable from someone genuinely typing the daemon
+// subcommand. Since none of these commands ever expect stray positional words, seeing any
+// is a strong signal the whole thing was meant as a query, not a subcommand invocation.
+//
+// config/managers/forget/watch/query are deliberately left out of this list: they
+// legitimately take positional arguments as part of normal usage (a config key and value,
+// a package manager name, a command to run), so "extra positional text" is expected and
+// correct for them, not a sign of misrouting.
+const FLAGS_FOR_BARE_CMD: &[(&str, &[&str])] = &[
+    ("init", &["--force"]),
+    ("daemon", &["--status"]),
+    ("stats", &[]),
+    ("providers", &[]),
+    ("explain", &[]),
+    ("improve", &[]),
+    ("version", &[]),
+];
+
+// True if every argument after the subcommand word is one of the flags that subcommand
+// actually accepts (or there are no extra arguments at all). See FLAGS_FOR_BARE_CMD above
+// for why this matters.
+fn looks_like_bare_subcommand(args: &[String], allowed_flags: &[&str]) -> bool {
+    args[2..]
+        .iter()
+        .all(|a| allowed_flags.contains(&a.as_str()))
+}
+
+// Looks for `flag` in args and returns whatever comes right after it. Used for anything
+// that takes a value, --before, --session, --learn, instead of each command hand-rolling
+// its own little index-walking loop to do the exact same thing.
+fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+// Just checks whether a bare flag like --force or --raw showed up anywhere in the args.
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+// Pulls --raw and --interactive/-i out of a raw argument slice and returns the leftover
+// words joined back into one query string, along with the two flag states. Both the
+// shorthand `bruh "<query>"` path and the explicit `bruh query <text>` path call this now,
+// so there's exactly one implementation of "how do we recognise flags in a query" instead
+// of two that quietly did it differently: the shorthand path used to strip "--raw" with a
+// plain string replace (which would mangle a query that happened to contain that substring
+// as ordinary text) and never stripped --interactive/-i at all, so `bruh "my query"
+// --interactive` silently didn't do what the equivalent `bruh query "my query"
+// --interactive` did.
+fn parse_query_args(args: &[String]) -> (String, bool, bool) {
+    let raw = has_flag(args, "--raw");
+    let interactive = has_flag(args, "--interactive") || has_flag(args, "-i");
+    let text = args
+        .iter()
+        .filter(|a| !matches!(a.as_str(), "--raw" | "--interactive" | "-i"))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (text, raw, interactive)
+}
 
 // Rust functions are sync by default. To activate async, we apply the tokio::main 'attribute.'
 #[tokio::main]
@@ -90,24 +162,29 @@ async fn run() -> Result<()> {
     // We then extract the index[1] command in the arguments to see if it matches any of the constant array of known commands we listed somewhere at the top of this file. // The actual first one(index[0]) is of course the command `bruh` but that doesn't belong to commands grouped as arguments here. In clap's terminology, we would say subcommand in certain instances.
     let first = args.get(1).map(|s| s.as_str());
 
-    // Here, if index[[1] is not a known command, we treat everything after the binary name as a natural-language query. Let me tell you briefly what led to this decision. I wanted something that sounded natural. At first, the design I had was something like `bruh query "what was the last thing I fixed?"`but then I realised we could just write `bruh "what was the last thing I fixed?"` without the query. This led to my checking for the first word.
+    // Here, if index[1] is not a known command, we treat everything after the binary name as a natural-language query. Let me tell you briefly what led to this decision. I wanted something that sounded natural. At first, the design I had was something like `bruh query "what was the last thing I fixed?"` but then I realised we could just write `bruh "what was the last thing I fixed?"` without the query. This led to my checking for the first word.
     if let Some(f) = first {
-        // We are basically saying, if index[1] is not contained in the known commands and also does not have the - (short option) symbol in it, we should take everything after it as a query.
-        // Take note that we extracted the f value from first in the if let Option above.
-        //  The reason is that the .get(1) method in the "let first variable assignment" returned an Option which we have to match to extract; `if let` is a happy form of matching and extracting. The reason for using the get method instead of accessing the index directly is that it returns an Option type so that the program doesn't just panic each time we somehow try to access something that is out of the scope of the args vector and of course we can decide what happens if it returns none using a match. In this case, it will panic but that's almost IMPOSSIBLE to happen :-)
-        if !KNOWN_CMDS.contains(&f) && !f.starts_with('-') {
-            let query = args[1..].join(" ");
-            // Here, we check for the --raw flag that will toggle between machine and human-readable displays.
-            let raw = args.contains(&"--raw".to_string());
-            // We then remove the raw flag here and take the clean query.
-            let query_clean = query.replace("--raw", "").trim().to_string();
+        // Two ways this counts as a query instead of a real subcommand:
+        //   1. The first word just isn't a known command at all (the common case, someone
+        //      quoted their whole question like the docs show).
+        //   2. The first word DOES match a known command, but it's one that only ever takes
+        //      flags (see FLAGS_FOR_BARE_CMD), and there's stray non-flag text after it.
+        //      That combination can only happen if someone typed an unquoted question that
+        //      happens to start with a reserved word, like `bruh daemon seems stuck`, since
+        //      a real invocation of that subcommand would never have extra freeform words
+        //      dangling off the end.
+        let is_reserved = KNOWN_CMDS.contains(&f);
+        let misrouted_reserved_word = is_reserved
+            && FLAGS_FOR_BARE_CMD
+                .iter()
+                .find(|(cmd, _)| *cmd == f)
+                .is_some_and(|(_, flags)| !looks_like_bare_subcommand(&args, flags));
 
-            //  The cli::query::run() then gets the parameters passed to it: the cleaned query and the state of being raw or not(true or false).
-// We will pass this to cognee in query run then pass the response to the printer in cli output for formatting.
-// Literally, the raw state is not used by the run itself but the cli ouput printer. This only serves as a portal to pass it as a pair on each command entry.
-
-
-// QUICK ONE: I add some comments as the project grows. Just figure it out.
+        if (!is_reserved && !f.starts_with('-')) || misrouted_reserved_word {
+            let (query_clean, raw, interactive) = parse_query_args(&args[1..]);
+            if interactive {
+                return cli::query::run_interactive().await;
+            }
             return cli::query::run(&query_clean, raw).await;
         }
     }
@@ -119,7 +196,7 @@ async fn run() -> Result<()> {
     match first {
         Some("init") => {
             //  Note that --force reinstalls the git hook even if already present.
-            if args.iter().any(|a| a == "--force") {
+            if has_flag(&args, "--force") {
                 cli::init::run_force()?; // Now here's the first time we're propagating with the question mark operator without counting the cli::query::run() above cause it will definitely return the Result Type by the end of the day.
             } else {
                 cli::init::run()?; // This satisfies the init command
@@ -130,8 +207,8 @@ async fn run() -> Result<()> {
             // The daemon is the first heart of this project. Without it, the project would be a recurring burden to developers
 
             // Just like we did with --force in init, we do same with daemon options for --status
-            if args.iter().any(|a| a == "--status") {
-            // This function will literally just tell us if the daemon is actively working or not then close the program(return).
+            if has_flag(&args, "--status") {
+                // This function will literally just tell us if the daemon is actively working or not then close the program(return).
                 return cli::status::run().map_err(Into::into);
             }
             // Without the flag, it sets up the daemon.
@@ -141,55 +218,29 @@ async fn run() -> Result<()> {
         // Say a developer is oblivious of the natural language design, this is a provision for it to take the word "query" as an arguments
         // Wait, I just had an idea now!!! We could have a command where the user queries cognee for information then ports the response to an LLM with a custom prompt for something specific. That will be cool in future but eyes on the goal now.
         Some("query") => {
-        // As usual, we check for the flags; here's raw and interactive.
-            let raw = args.contains(&"--raw".to_string());
-            let interactive = args.iter().any(|a| a == "--interactive" || a == "-i");
+            // Same parse_query_args helper the shorthand path above uses, so both ways of
+            // asking a question behave identically instead of two subtly different parsers.
+            let (query_clean, raw, interactive) = parse_query_args(&args[2..]);
 
             if interactive {
                 cli::query::run_interactive().await?;
             } else {
-                // We then collect everything after "query" (and after any flags) as the query
-                let q: Vec<&str> = args[2..]
-                    .iter()
-                    .filter(|a| !a.starts_with("--"))
-                    .map(|s| s.as_str())
-                    .collect();
-                    // If there's nothing after the flags, it means we don't have a query so we print a useful guide.
-                    // Note that the bail macro in anyhow has the return function embedded in it so the program will print the guideline, and exit.
-                if q.is_empty() {
+                // If there's nothing left after stripping flags, there's no actual query,
+                // so we print a usage guide instead of sending an empty string to Cognee.
+                // anyhow::bail! both builds the error and returns early in one step.
+                if query_clean.is_empty() {
                     anyhow::bail!("Usage: bruh query <text>  |  bruh query --interactive");
                 }
-                // After all these, if there's a query, we pass it to run.
-                // We're referencing instead of passing ownership rather. Remember why? Right! Cause Rust does not allow taking ownerhip of a vec index and we want to be sure the whole lump is fairly settled here.
-                // As usual, raw is a state of true or false.
-                cli::query::run(&q.join(" "), raw).await?;
+                cli::query::run(&query_clean, raw).await?;
             }
         }
-        
 
         Some("forget") => {
-            // We state here that the none we need for the before and session is of an advanced String Type but default the value to none while keeping them mutable.
-            // Basically, these are all defaults for situations where the options are not stated by the commander.
-            // That would mean, without the options, there's no before and session. There's also no forced valuation(set to false).
-            let mut before: Option<String> = None;
-            let mut session: Option<String> = None;
-            let mut force = false;
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--before" => {
-                        i += 1;
-                        before = args.get(i).cloned();
-                    }
-                    "--session" => {
-                        i += 1;
-                        session = args.get(i).cloned();
-                    }
-                    "--force" => force = true,
-                    _ => {}
-                }
-                i += 1;
-            }
+            // Same extract_flag_value/has_flag helpers used everywhere else now, instead of
+            // a hand-rolled loop walking the args by index.
+            let before = extract_flag_value(&args, "--before");
+            let session = extract_flag_value(&args, "--session");
+            let force = has_flag(&args, "--force");
             cli::forget::run(before, session, force).await?;
         }
 
@@ -197,20 +248,12 @@ async fn run() -> Result<()> {
         // It probably will be able to do so on its own but this feature will be here in a situation where we want to force it or better said 'coerce' it to do so.
         // We initialize learn to nothing while expecting a String Type. Then we look for the --learn  flag. If we find it, we seek for the following argument and pass it to the managers::run associating function.
         Some("managers") => {
-            let mut learn: Option<String> = None;
-            let mut i = 2;
-            // I can see an edge case here in this while loop but I'll handle that later. Let's see how the internal workings will be first.
-            while i < args.len() {
-                if args[i] == "--learn" {
-                    i += 1;
-                    learn = args.get(i).cloned();
-                }
-                i += 1;
-            } 
+            // extract_flag_value handles the "flag with no value after it" case cleanly too
+            // (args.get(i + 1) just returns None), no loop to get subtly wrong.
+            let learn = extract_flag_value(&args, "--learn");
             cli::managers::run(learn).await?;
         }
         // The four wise men below are straightforward, aren't they?
-        
         Some("stats") | Some("--stats") => {
             cli::stats::run().await?;
         }
@@ -221,15 +264,20 @@ async fn run() -> Result<()> {
         Some("explain") => {
             cli::explain::run().await?;
         }
-        
+
         Some("improve") => {
             cli::improve::run().await?;
         }
 
-        
         Some("watch") => {
-            // We take the third argument(index[2]) and pass it to the watch runner as a reference.
-            // The fun fact here is that we cannot take ownership of a vec index according to Rust rules right? So we reference it! Is that contextually sound here?
+            // We take everything after "watch" and pass it to the watch runner.
+            // On the question left here before: args[2..] is a slice we're borrowing, not
+            // something we own outright, so we can't move a String out of it directly. What
+            // .to_vec() actually does is auto-ref that slice and clone every element into a
+            // brand new, owned Vec<String>, it's a real (small) allocation and clone, not a
+            // free reference. For a handful of CLI args that cost is nothing, and it's the
+            // correct, idiomatic way to turn a borrowed slice into owned data you can hand
+            // off to something else, like Command::args() below in watch.rs.
             let cmd_args = args[2..].to_vec();
             cli::watch::run(&cmd_args).await?;
         }
@@ -244,7 +292,7 @@ async fn run() -> Result<()> {
             let value = args.get(4).map(|s| s.as_str());
             cli::config_cli::run(sub, key, value)?;
         }
-        
+
         // This helps users check the version of the package and git hash for it. It will be helpful in future for debugging and security verifications.
         Some("version") | Some("--version") | Some("-v") => {
             println!(
@@ -261,17 +309,13 @@ async fn run() -> Result<()> {
         }
         // This is where we catch-all. It's designed to be annoying when you get the commands wrong everytime. What we do is, whether the user calls the program with no arguments or with misunderstood queries, we print the error, and the help message. Then exit the program with a value that's NOT 0.
         Some(unknown) => {
-            eprintln!(
-                "{} {}",
-                cli::output::orange("Unknown command:"),
-                unknown
-            );
+            eprintln!("{} {}", cli::output::orange("Unknown command:"), unknown);
             print_help();
             std::process::exit(1);
         }
     }
-        // Whew!!! That's it for the Parser. Now let's get the data flowing!
-        
+    // Whew!!! That's it for the Parser. Now let's get the data flowing!
+
     Ok(()) // When the function ends successfully, it returns this to satisfy the return contract.
 }
 
@@ -287,7 +331,11 @@ fn print_help() {
         println!("  {}  {}", green(&format!("{:<36}", cmd)), dim(desc));
     };
 
-    println!("{} {}\n", bold(&cyan("bruh")), dim("— persistent developer memory"));
+    println!(
+        "{} {}\n",
+        bold(&cyan("bruh")),
+        dim("— persistent developer memory")
+    );
     println!("{}", bold("USAGE:"));
     row("bruh <query>", "Natural language memory query (shorthand)");
     println!("  {} [options]\n", bold(&cyan("bruh <command>")));
@@ -297,7 +345,10 @@ fn print_help() {
     row("daemon --status", "Show daemon health");
     row("query <text> [--raw] [--interactive]", "Query memory");
     row("explain", "Session handoff brief for current directory");
-    row("watch <cmd> [args...]", "Run command; surface error history on failure");
+    row(
+        "watch <cmd> [args...]",
+        "Run command; surface error history on failure",
+    );
     row("stats", "Productivity summary");
     row("improve", "Trigger Cognee graph enrichment");
     row("forget --before <date>", "Forget events before date");
@@ -311,11 +362,147 @@ fn print_help() {
     row("version", "Show version");
     println!();
     println!("{}", bold("ENV VARS:"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "BRUH_COGNEE_API_KEY")), dim("Override Cognee API key"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "BRUH_POLL_INTERVAL")), dim("Override poll interval (seconds)"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "NO_COLOR")), dim("Disable ANSI colors"));
-    println!("  {}  {}", cyan(&format!("{:<20}", "RUST_LOG")), dim("Log level (info, debug, warn)"));
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "BRUH_COGNEE_API_KEY")),
+        dim("Override Cognee API key")
+    );
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "BRUH_POLL_INTERVAL")),
+        dim("Override poll interval (seconds)")
+    );
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "NO_COLOR")),
+        dim("Disable ANSI colors")
+    );
+    println!(
+        "  {}  {}",
+        cyan(&format!("{:<20}", "RUST_LOG")),
+        dim("Log level (info, debug, warn)")
+    );
 }
 
-// There are no tests to run here for now. Let's see how it goes towards the end of the journey.
+// There are no other tests to run here beyond the ones right below. Let's see how it goes towards the end of the journey.
 // I'll now go ahead to engage with each of the connected modules to ensure a round flow of data. Obviously, we'll start with the cli::query cause why not?
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn extract_flag_value_finds_the_value_after_the_flag() {
+        let a = args(&["bruh", "forget", "--before", "2026-01-01"]);
+        assert_eq!(
+            extract_flag_value(&a, "--before"),
+            Some("2026-01-01".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_flag_value_missing_flag_is_none() {
+        let a = args(&["bruh", "forget", "--force"]);
+        assert_eq!(extract_flag_value(&a, "--before"), None);
+    }
+
+    #[test]
+    fn extract_flag_value_flag_with_no_trailing_value_is_none() {
+        // --learn as the very last argument, nothing after it to grab.
+        let a = args(&["bruh", "managers", "--learn"]);
+        assert_eq!(extract_flag_value(&a, "--learn"), None);
+    }
+
+    #[test]
+    fn has_flag_detects_presence_and_absence() {
+        let a = args(&["bruh", "forget", "--force"]);
+        assert!(has_flag(&a, "--force"));
+        assert!(!has_flag(&a, "--before"));
+    }
+
+    #[test]
+    fn parse_query_args_strips_raw_as_a_token_not_a_substring() {
+        // This is the exact bug that used to exist: a plain string .replace("--raw", "")
+        // would mangle a query containing that substring anywhere, not just as a flag.
+        let a = args(&["explain", "the", "--raw", "flag", "behavior"]);
+        let (text, raw, interactive) = parse_query_args(&a);
+        assert_eq!(text, "explain the flag behavior");
+        assert!(raw);
+        assert!(!interactive);
+    }
+
+    #[test]
+    fn parse_query_args_strips_interactive_long_and_short_form() {
+        let a = args(&["my", "query", "--interactive"]);
+        let (text, _, interactive) = parse_query_args(&a);
+        assert_eq!(text, "my query");
+        assert!(interactive);
+
+        let a = args(&["my", "query", "-i"]);
+        let (text, _, interactive) = parse_query_args(&a);
+        assert_eq!(text, "my query");
+        assert!(interactive);
+    }
+
+    #[test]
+    fn parse_query_args_plain_query_is_untouched() {
+        let a = args(&["what", "was", "the", "last", "thing", "I", "fixed"]);
+        let (text, raw, interactive) = parse_query_args(&a);
+        assert_eq!(text, "what was the last thing I fixed");
+        assert!(!raw);
+        assert!(!interactive);
+    }
+
+    #[test]
+    fn looks_like_bare_subcommand_true_for_no_extra_args() {
+        let a = args(&["bruh", "daemon"]);
+        assert!(looks_like_bare_subcommand(&a, &["--status"]));
+    }
+
+    #[test]
+    fn looks_like_bare_subcommand_true_for_a_recognised_flag() {
+        let a = args(&["bruh", "daemon", "--status"]);
+        assert!(looks_like_bare_subcommand(&a, &["--status"]));
+    }
+
+    #[test]
+    fn looks_like_bare_subcommand_false_for_stray_words() {
+        // This is the unquoted-collision case: "daemon" is a real subcommand, but "seems"
+        // and "stuck" aren't --status, so this was never really meant as the daemon command.
+        let a = args(&["bruh", "daemon", "seems", "stuck"]);
+        assert!(!looks_like_bare_subcommand(&a, &["--status"]));
+    }
+
+    #[test]
+    fn reserved_word_collision_is_detected_for_bare_commands() {
+        // Mirrors the exact check main.rs's shorthand-query branch does before dispatching.
+        for word in ["daemon", "stats", "providers", "explain", "improve", "init"] {
+            let a = args(&["bruh", word, "totally", "unrelated", "words"]);
+            let f = a[1].as_str();
+            let is_reserved = KNOWN_CMDS.contains(&f);
+            assert!(is_reserved, "{word} should be a known command");
+            let misrouted = FLAGS_FOR_BARE_CMD
+                .iter()
+                .find(|(cmd, _)| *cmd == f)
+                .is_some_and(|(_, flags)| !looks_like_bare_subcommand(&a, flags));
+            assert!(
+                misrouted,
+                "{word} followed by stray words should be treated as a query"
+            );
+        }
+    }
+
+    #[test]
+    fn config_is_not_subject_to_the_bare_subcommand_check() {
+        // config legitimately takes positional args (sub/key/value), so it's deliberately
+        // absent from FLAGS_FOR_BARE_CMD, extra words after it are normal, expected usage.
+        assert!(!FLAGS_FOR_BARE_CMD.iter().any(|(cmd, _)| *cmd == "config"));
+        assert!(!FLAGS_FOR_BARE_CMD.iter().any(|(cmd, _)| *cmd == "managers"));
+        assert!(!FLAGS_FOR_BARE_CMD.iter().any(|(cmd, _)| *cmd == "forget"));
+        assert!(!FLAGS_FOR_BARE_CMD.iter().any(|(cmd, _)| *cmd == "watch"));
+    }
+}

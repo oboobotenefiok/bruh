@@ -5,8 +5,10 @@
 // staring at a blank terminal wondering if it had actually done anything, so I made sure it
 // prints a clear header, a progress indicator, and a real summary line at the end.
 
-use crate::cli::output::{bold, dim, green, print_footer, print_header};
-use crate::cognee::improve;
+use crate::{
+    cli::output::{bold, dim, green, print_footer, print_header},
+    cognee::improve,
+};
 use anyhow::Result;
 use std::io::Write;
 

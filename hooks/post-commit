@@ -2,10 +2,25 @@
 # bruh post-commit hook — GIT-NEW-001: NEVER blocks git commit.
 # Delivers commit data to the daemon via Unix socket (Unix) or drop-file (Windows/fallback).
 # Every failure path exits 0 silently.
+#
+# Optional: install `socat` (brew install socat / apt install socat / pkg install socat on
+# Termux) for instant, real-time commit delivery over the Unix socket below. Without it,
+# this hook still works, it just falls back to the drop-file path, which the daemon picks
+# up on its next poll tick (every 30-60s by default) instead of immediately.
 
 BRUH_DATA_DIR="${LOCALAPPDATA:-$HOME/.local/share/bruh}"
 SOCKET="$HOME/.local/share/bruh/git.sock"
 DROP_FILE="$BRUH_DATA_DIR/git_events.ndjson"
+
+# Escapes a string for safe embedding inside a JSON string value. Backslashes have to be
+# escaped BEFORE quotes, not after, escaping quotes first and then backslashes would double
+# up the backslash that quote-escaping just inserted, corrupting the output. Getting this
+# order right is the whole fix: without it, a commit message mentioning a Windows path or a
+# regex pattern (anything with a literal backslash) would produce invalid JSON that the
+# daemon-side parser rejects outright.
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
 {
     HASH=$(git rev-parse HEAD 2>/dev/null)              || exit 0
@@ -17,12 +32,12 @@ DROP_FILE="$BRUH_DATA_DIR/git_events.ndjson"
     DIR=$(git rev-parse --show-toplevel 2>/dev/null)    || DIR="$PWD"
 
     PAYLOAD=$(printf '{"hash":"%s","message":"%s","branch":"%s","files_changed":["%s"],"diff_summary":"%s","working_directory":"%s"}' \
-        "$HASH" \
-        "$(echo "$MSG"   | sed 's/"/\\"/g')" \
-        "$BRANCH" \
-        "$(echo "$FILES" | sed 's/,/","/g')" \
-        "$(echo "$DIFF"  | sed 's/"/\\"/g')" \
-        "$(echo "$DIR"   | sed 's/"/\\"/g')")
+        "$(json_escape "$HASH")" \
+        "$(json_escape "$MSG")" \
+        "$(json_escape "$BRANCH")" \
+        "$(echo "$FILES" | sed 's/,/","/g' | sed 's/\\/\\\\/g')" \
+        "$(json_escape "$DIFF")" \
+        "$(json_escape "$DIR")")
 
     # Try Unix socket first (fast, real-time on Unix)
     if [ -S "$SOCKET" ] && command -v socat >/dev/null 2>&1; then

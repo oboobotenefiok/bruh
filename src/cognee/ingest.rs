@@ -60,8 +60,8 @@ pub async fn remember(events: Vec<Event>) -> Result<()> {
             .post_multipart("add", {
                 let text_blocks = text_blocks.clone();
                 move || {
-                    let mut form = reqwest::multipart::Form::new()
-                        .text("datasetName", super::DATASET_NAME);
+                    let mut form =
+                        reqwest::multipart::Form::new().text("datasetName", super::DATASET_NAME);
                     for (i, block) in text_blocks.iter().enumerate() {
                         let part = reqwest::multipart::Part::text(block.clone())
                             .file_name(format!("event_{i}.txt"))

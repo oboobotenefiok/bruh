@@ -23,11 +23,15 @@ path = "src/lib.rs"
 # "it builds and works the exact same way for anyone who clones the repo," not something
 # that could quietly shift under me if crates.io serves a newer patch release mid-judging.
 [dependencies]
-# Async runtime for the daemon's event loop. We only pull in the specific feature flags we
-# actually use (macros for #[tokio::main], multi-thread for the runtime itself, io-util and
-# net for the git socket, time for the poll/flush timers, signal for graceful shutdown)
-# rather than the "full" feature bundle, keeps compile times down.
-tokio = { version = "=1.35.1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "signal"] }
+# Async runtime for the daemon's event loop. We pull in the specific feature flags we
+# actually use rather than the "full" bundle, keeps compile times down. macros for
+# #[tokio::main], multi-thread for the runtime itself, io-util and net for the git socket,
+# time for the poll/flush timers, signal for graceful shutdown, fs and process for the
+# async-native filesystem and subprocess calls the daemon's pollers make on every tick
+# (tokio::fs / tokio::process instead of std::fs / std::process::Command, so a slow disk
+# read or a slow `pip list` can't block one of the runtime's worker threads and stall
+# everything else scheduled on it, the git listener and shutdown signal check included).
+tokio = { version = "=1.35.1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "signal", "fs", "process"] }
 # HTTP client for talking to Cognee and the LLM provider APIs. rustls-tls instead of the
 # default openssl-based TLS backend so we don't need a system OpenSSL install, one less
 # thing that can go wrong on a machine we don't control. "blocking" is included just for
@@ -50,8 +54,6 @@ url = "=2.4.1"
 # Currently unused directly but kept as a transitive-pin, some versions of our other deps
 # expect indexmap in the dependency tree and this keeps the lockfile stable across builds.
 indexmap = "=2.2.6"
-# Pretty table rendering for bruh stats
-prettytable-rs = "=0.10.0"
 
 [dev-dependencies]
 # Only used by tests, gives us real temp files/dirs for the cursor and buffer round-trip

@@ -1,11 +1,18 @@
-// This is the  mod.rs. A quick reminder that whether you use the mod.rs naming convention or stay with the name.rs file format is left to you but for this design where there's a lot of submodules and separation of concerns, it is necessary.If you use the mod.rs format like this, your editor may look messy when you have many mod.rs tabs and you don't know which is which...just so you know.Here I declare all the file that I'm expecting to implement for queries. If you look closely, you'll notice that the file names are in line with the queries we listed in the main.rs file.Yeah, every command except version and help. 
+// This is the mod.rs for the cli module. Whether you use the mod.rs naming convention or
+// keep each submodule's declarations in a file named after itself is really just a matter
+// of taste, but for a module with this many submodules it keeps things tidy, the tradeoff
+// is your editor can end up with a pile of tabs all labeled "mod.rs" if you're not careful
+// about also showing the folder name.
+//
+// Every file declared below implements one of the commands listed in main.rs's help text,
+// with two exceptions: version and help aren't handled here at all. version reads its
+// version string and git hash straight out of the env! macro over in main.rs's own match
+// arm, and help is just main.rs's print_help() function firing on the catch-all arm. Both
+// answers live in main.rs itself, not in a submodule here, so don't go looking for them.
+// That leaves the eleven real commands below.
 
-// Remember in the main.rs file, we had a print_help() function we called for the catch-all arm of our query? That's your first answer. Secondly, you'll also notice we fetched the version and git hash right in the arm of the version match from the config files from env! macro. That answers your two questions as to where the commands are handled. Now we have just eleven commands to handle here.
-
-pub mod config_cli;
 pub mod config;
-// Behold the eleven commands, and these are their submodules in this folders being declared.
-// Note that we don't list this in main.rs cause it's not a direct child of it.
+pub mod config_cli;
 pub mod explain;
 pub mod forget;
 pub mod improve;
@@ -18,7 +25,5 @@ pub mod stats;
 pub mod status;
 pub mod watch;
 
-// That's all
 pub use config::home_dir;
 pub use config::Config;
-// Now lets move into the commands one by one. We start with the query as we promised.

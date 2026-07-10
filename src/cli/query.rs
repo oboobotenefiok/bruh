@@ -1,10 +1,11 @@
-// First the trailing argument query mode (handled in main.rs).
-// Then the interactive query mode.
-// And the  --raw flag.
-// Then the formatted timeline output.
+//! Handles three related things: the plain `bruh <query>` / `bruh query <text>` path, the
+//! interactive `-i` REPL mode, and the `--raw` flag that switches between the friendly
+//! timeline rendering and a raw JSON dump.
 
-use crate::cli::output::{cyan, dim, print_timeline};
-use crate::cognee::{recall, DATASET_NAME};
+use crate::{
+    cli::output::{cyan, dim, print_timeline},
+    cognee::{recall, DATASET_NAME},
+};
 use anyhow::Result;
 use std::io::{self, BufRead, Write};
 
@@ -40,9 +41,9 @@ fn local_dataset_answer(query: &str) -> Option<String> {
     }
 }
 
-// Remember from the main file that query run needed two things
-// 1. the cleaned up query itself and 
-// 2. the state of the raw flag whether true or false.
+// query is the already-cleaned text (flags stripped, see parse_query_args in main.rs), and
+// raw controls whether we print Cognee's response as-is (JSON) or render it as a friendly
+// timeline via print_timeline.
 pub async fn run(query: &str, raw: bool) -> Result<()> {
     // Meta-questions about bruh's own setup get answered here, locally, before we ever
     // touch the network. See local_dataset_answer's comment above for the full reasoning.
@@ -58,63 +59,58 @@ pub async fn run(query: &str, raw: bool) -> Result<()> {
     eprint!("  {} ", dim("→ Thinking…"));
     io::stderr().flush()?;
 
-// Now this looks really simple doesnt it? We're calling cognee and saying, HEY!!! Do you remember something like this?
     let response = recall(query).await?;
     eprint!("\r{}\r", " ".repeat(20)); // clear the "Thinking…" line before printing the real output
-// We then pass it to the cli::ouput which will print the response with the given format of raw or not. Now that's easy right!!! // That's how easy it is to use cognee!!!!!!!!!!!!!!!!!!!
-// We don't have to worry about how they manage the vector this, graph that and all of that.
     print_timeline(&response, raw);
-// The unit type is passed wrapped in the Ok variant for the result type contract of the function to be satisfied. This will be passed to the main function at the line where I said would rather have been the first line with the question mark operator. The one with the await and what were we awaiting? Yep, right! Cognee's response. The reason for the async function we have here.
     Ok(())
 }
 
-/// This is only available when you use the query command with the -i flag. It keeps querying until EOF or Ctrl-C OR you type quit or exit. I'll add q and e soon.
+/// "exit"/"quit" or their short forms "e"/"q" all end the interactive session.
+fn is_exit_command(input: &str) -> bool {
+    matches!(input, "exit" | "quit" | "e" | "q")
+}
+
+/// Only reachable via the `-i` / `--interactive` flag (see parse_query_args in main.rs).
+/// Keeps prompting and querying until EOF (Ctrl-D), Ctrl-C, or the user types "quit",
+/// "exit", or their short forms "q"/"e".
 pub async fn run_interactive() -> Result<()> {
-// cyan()/dim()/orange() already no-op to plain text on their own when colors are disabled
-// (NO_COLOR, non-TTY, etc, see cli/output.rs), so there's no need for us to branch on
-// is_color_enabled() by hand here anymore like the old code did, one less thing to keep in sync.
+    // cyan()/dim()/orange() already no-op to plain text on their own when colors are
+    // disabled (NO_COLOR, non-TTY, etc, see cli/output.rs), so there's no need to branch on
+    // is_color_enabled() by hand here, one less thing to keep in sync.
     let prompt = format!("{} ", cyan("bruh>"));
-// This tells the user the state he's in and how to escape it.
     println!("bruh interactive mode. Press Ctrl-C or Ctrl-D to exit.\n");
-// We then place ourselves in a loop. 
 
     let stdin = io::stdin();
     loop {
-// This prints the prompt we built above.
         print!("{}", prompt);
         io::stdout().flush()?;
-// We declare a new line to listen to in the match.
+
         let mut line = String::new();
         match stdin.lock().read_line(&mut line) {
-            Ok(0) => break, // EOF when triggered.
-            Ok(_) => {} // Every other thing does nothing
-            Err(e) => { // An error will get printed and the loop broken
+            Ok(0) => break, // EOF (Ctrl-D)
+            Ok(_) => {}
+            Err(e) => {
                 eprintln!("Read error: {}", e);
                 break;
             }
         }
-// Then we check if query is an empty value, otherwise...
-// We trim and pass line to query for that reason.
-// I feel there can be more idiomatic Rust for all these
+
         let query = line.trim();
         if query.is_empty() {
             continue;
         }
-// ...we break the loop if exit or quit is typed.
-// I'll implement for e and q later but this is just as fine.
-        if query == "exit" || query == "quit" {
+        if is_exit_command(query) {
             break;
         }
-// We call the cognee recall and pass the query to it just like in the non-interactive mode.
-// We handle error here quite differently though. We match the response instead of propagating with the ? operator.
-// You'd definitely want to do same if you were me cause now we're in INTERACTIVE MODE.
-// Same local shortcut as the non-interactive path above, meta-questions about bruh's own
-// setup never need to leave the machine.
+
+        // Same local shortcut as the non-interactive path above, meta-questions about
+        // bruh's own setup never need to leave the machine.
         if let Some(answer) = local_dataset_answer(query) {
             print_timeline(&serde_json::json!({ "text": answer }), false);
             continue;
         }
-// CLI-007: same "Thinking…" indicator as the non-interactive path, see run() above.
+
+        // CLI-007: same "Thinking…" indicator as the non-interactive path, see run() above.
         eprint!("  {} ", dim("→ Thinking…"));
         io::stderr().flush()?;
         match recall(query).await {
@@ -129,8 +125,8 @@ pub async fn run_interactive() -> Result<()> {
         }
     }
 
-    println!("\nGoodbye."); // :-)
-    Ok(()) // As usual, we satisfy the contract.
+    println!("\nGoodbye.");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -161,5 +157,20 @@ mod tests {
         // to Cognee like any other real question about actual activity.
         assert!(local_dataset_answer("what did I install yesterday").is_none());
         assert!(local_dataset_answer("show me my last git commit").is_none());
+    }
+
+    #[test]
+    fn test_exit_command_recognises_all_four_forms() {
+        assert!(is_exit_command("exit"));
+        assert!(is_exit_command("quit"));
+        assert!(is_exit_command("e"));
+        assert!(is_exit_command("q"));
+    }
+
+    #[test]
+    fn test_exit_command_does_not_swallow_real_queries() {
+        assert!(!is_exit_command("explain my last error"));
+        assert!(!is_exit_command("query something"));
+        assert!(!is_exit_command(""));
     }
 }

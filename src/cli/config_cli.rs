@@ -5,9 +5,34 @@
 // Config's methods expect" and then printing something nice back.
 
 // We bring in the custom pretty printer
-use crate::cli::output::{bold, cyan, dim, green, print_footer, print_header};
-use crate::cli::Config;
+use crate::cli::{
+    output::{bold, cyan, dim, green, print_footer, print_header},
+    Config,
+};
 use anyhow::Result;
+
+// Deliberately hand-maintained rather than reflecting over Config's fields at runtime
+// (Rust doesn't give us that without extra crates for a project this size). The
+// config_keys_cover_every_config_field test below is what actually keeps this honest: it
+// serializes a real Config to JSON and asserts every field name shows up here too, so
+// forgetting to add a new field here fails `cargo test` instead of just silently never
+// appearing in `bruh config list`.
+const DISPLAY_KEYS: &[&str] = &[
+    "cognee_api_key",
+    "cognee_api_url",
+    "gemini_api_key",
+    "groq_api_key",
+    "claude_api_key",
+    "llm_priority",
+    "discovery_enabled",
+    "discovery_rate_limit_seconds",
+    "poll_interval_seconds",
+    "batch_flush_interval_seconds",
+    "max_buffer_size",
+    "daemon_log_level",
+    "offline_buffer_path",
+    "excluded_commands",
+];
 
 // sub is the subcommand ("list", "get", or "set"), already extracted from argv in main.rs.
 // key and value are Options since "list" needs neither, "get" needs just key, and "set"
@@ -18,25 +43,7 @@ pub fn run(sub: &str, key: Option<&str>, value: Option<&str>) -> Result<()> {
             let cfg = Config::load()?;
             print_header("Configuration");
             println!();
-            // Deliberately hand-maintained list of keys here rather than trying to
-            // reflect over the Config struct's fields (Rust doesn't give us easy runtime
-            // struct field iteration without extra crates), so if a new field gets added
-            // to Config, remember to add it here too or it just won't show up in the list.
-            let keys = [
-                "cognee_api_key",
-                "cognee_api_url",
-                "gemini_api_key",
-                "groq_api_key",
-                "claude_api_key",
-                "llm_priority",
-                "discovery_enabled",
-                "discovery_rate_limit_seconds",
-                "poll_interval_seconds",
-                "batch_flush_interval_seconds",
-                "max_buffer_size",
-                "daemon_log_level",
-            ];
-            for k in &keys {
+            for k in DISPLAY_KEYS {
                 // Get the configs and assign to each the indexes in the array of keys
                 if let Some(v) = cfg.get_value(k) {
                     println!("  {}  {}", cyan(&format!("{:<35}", k)), bold(&v));
@@ -74,4 +81,54 @@ pub fn run(sub: &str, key: Option<&str>, value: Option<&str>) -> Result<()> {
         }
     }
     Ok(()) // Satisfy the contract.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Serializes a real Config to JSON and checks its field names against DISPLAY_KEYS in
+    // both directions: every JSON field should be listed here, and everything listed here
+    // should be a real field. Whichever direction breaks tells you exactly what drifted,
+    // add a field to Config and forget to list it here, or list a key that no longer (or
+    // never did) exist on the struct.
+    #[test]
+    fn config_keys_cover_every_config_field() {
+        let cfg = Config::default();
+        let json = serde_json::to_value(&cfg).expect("Config should serialize");
+        let fields = json.as_object().expect("Config serializes as an object");
+
+        for field_name in fields.keys() {
+            assert!(
+                DISPLAY_KEYS.contains(&field_name.as_str()),
+                "Config field '{}' exists on the struct but isn't in DISPLAY_KEYS, \
+                 it'll never show up in `bruh config list`",
+                field_name
+            );
+        }
+
+        for key in DISPLAY_KEYS {
+            assert!(
+                fields.contains_key(*key),
+                "DISPLAY_KEYS lists '{}' but Config has no such field anymore",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn every_display_key_resolves_through_get_value() {
+        // The other half of the guarantee: being listed in DISPLAY_KEYS is only useful if
+        // get_value() actually knows how to render it. This would have caught
+        // offline_buffer_path and excluded_commands sitting on the struct with no display
+        // support at all before this fix.
+        let cfg = Config::default();
+        for key in DISPLAY_KEYS {
+            assert!(
+                cfg.get_value(key).is_some(),
+                "'{}' is in DISPLAY_KEYS but get_value() doesn't know how to render it",
+                key
+            );
+        }
+    }
 }

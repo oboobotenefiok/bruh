@@ -23,6 +23,20 @@ pub async fn forget(before: Option<String>, session: Option<String>) -> Result<(
     // date-range delete. It's passed through as-is so it isn't silently dropped, but this
     // needs verifying against the tenant's Swagger/OpenAPI page before relying on it.
     if let Some(b) = before {
+        // Only warn in the specific risky combination: before with no session to also
+        // scope the request. cli::forget's confirmation prompt already surfaces this risk
+        // interactively, but --force skips that prompt entirely (by design, for
+        // scripting), so this log line is the only trace left in that case. Once this
+        // field's actually been verified against Cognee's schema, this warning (and the
+        // one in cli/forget.rs) should come out.
+        if session.is_none() {
+            log::warn!(
+                "forget --before '{}' used without --session, 'before' is not a confirmed \
+                 Cognee schema field, if it's silently ignored server-side this may delete \
+                 more than intended",
+                b
+            );
+        }
         body["before"] = json!(b);
     }
     if let Some(s) = session {

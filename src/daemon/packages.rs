@@ -8,15 +8,17 @@
 // installed package list and diff it against the previous snapshot to spot what's new
 // (pip, cargo, brew). Whichever approach fits the tool best is what I went with per manager.
 
-use crate::cli::{home_dir, Config};
-use crate::events::{Event, ManagerType, PackageInstallEvent};
+use crate::{
+    cli::{home_dir, Config},
+    events::{Event, ManagerType, PackageInstallEvent},
+};
 use anyhow::Result;
 use chrono::Utc;
 use log::debug;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 // PKG-005: last shell command captured by daemon for causal correlation.
 // This is populated in daemon/mod.rs after each shell poll tick.
@@ -60,11 +62,58 @@ fn make_event(manager: &str, package: String, version: Option<String>) -> Event 
     })
 }
 
+// Loads whatever snapshot we saved last time from state_path (an empty map if there isn't
+// one yet, or it failed to parse, corrupt local state here is recoverable, not fatal), and
+// only rewrites the file if `current` actually differs from it. brew/pip/cargo/winget/choco
+// all used to read-diff-write this same shape independently, and all of them wrote the file
+// back unconditionally on every single poll tick regardless of whether anything changed,
+// which meant a full JSON re-serialize and disk write every 30-60 seconds forever, even
+// when nothing was installed. Skipping the write when nothing changed avoids that, which
+// matters more here than it would on a beefier machine given how much this project cares
+// about being gentle on constrained storage (see the Termux-focused choices throughout).
+// Returns the previous snapshot either way, since that's what every caller needs to diff
+// its freshly-gathered `current` map against.
+async fn diff_and_persist(
+    state_path: &Path,
+    current: &HashMap<String, String>,
+) -> Result<HashMap<String, String>> {
+    let previous: HashMap<String, String> = if state_path.exists() {
+        tokio::fs::read_to_string(state_path)
+            .await
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    if &previous != current {
+        tokio::fs::write(state_path, serde_json::to_string_pretty(current)?).await?;
+    }
+
+    Ok(previous)
+}
+
+// Runs a subprocess on tokio's dedicated blocking-friendly process backend instead of
+// calling std::process::Command::output() directly inside an async fn. A synchronous
+// Command::output() call spawns and then blocks the CURRENT thread until the child exits,
+// which on tokio's multi-threaded runtime means one of the (typically CPU-count-sized) async
+// worker threads sits frozen for however long `pip list` or `brew list --versions` takes to
+// run, unable to service any other task scheduled on it: the git listener, the shutdown
+// signal check, or another poller's turn. tokio::process::Command is a proper async-native
+// wrapper, awaiting it yields control back to the runtime instead of parking a thread.
+async fn run_command(program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
+    tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+}
+
 // Called once per poll tick from daemon/mod.rs. Runs every manager's poller and collects
 // whatever install events came out of each. I used a little macro here (try_poll!) just to
 // avoid repeating the same match-and-log boilerplate for every single manager, a failed
 // poll on one manager (say pip isn't installed) shouldn't stop us from checking the others.
-pub async fn poll_package_managers(config: &Config) -> Result<Vec<Event>> {
+pub async fn poll_package_managers() -> Result<Vec<Event>> {
     let mut events = Vec::new();
     macro_rules! try_poll {
         ($f:expr) => {
@@ -120,10 +169,13 @@ async fn poll_pkg() -> Result<Vec<Event>> {
     .await
 }
 
-// Shared tailing logic for any dpkg-format log: read the cursor (how many lines we already
-// processed), read the whole log fresh, only look at the new lines past the cursor, and
-// save the new total as the cursor for next time. Cheap and simple since dpkg logs are
-// append-only and never get lines removed from the middle.
+// Shared tailing logic for any dpkg-format log: seek straight to the byte offset we
+// stopped at last time (via daemon::cursor), read only what's new since then, and save the
+// file's new total length as the next cursor. This used to read_lines_from() the WHOLE log
+// file on every single tick and only then skip past already-seen lines, which meant the
+// full file got read into memory and parsed from scratch every 30-60 seconds regardless of
+// how little had actually changed, exactly the inefficiency shell.rs's history poller
+// already solved with the same byte-offset approach this now shares.
 #[cfg(not(windows))]
 async fn poll_dpkg_log(log_path: &str, manager: &str, cursor_file: &str) -> Result<Vec<Event>> {
     let mut events = Vec::new();
@@ -133,14 +185,13 @@ async fn poll_dpkg_log(log_path: &str, manager: &str, cursor_file: &str) -> Resu
     }
 
     let state_dir = Config::data_dir()?;
-    std::fs::create_dir_all(&state_dir)?;
+    tokio::fs::create_dir_all(&state_dir).await?;
     let cursor_path = state_dir.join(cursor_file);
-    let cursor = read_line_cursor(&cursor_path)?;
+    let cursor = super::cursor::read_cursor(&cursor_path).await;
 
-    let lines = read_lines_from(&log)?;
-    let total = lines.len();
+    let (new_content, new_cursor) = super::cursor::read_new_bytes(&log, cursor).await?;
 
-    for line in &lines[cursor..] {
+    for line in new_content.lines() {
         if !line.contains(" install ") {
             continue;
         }
@@ -148,7 +199,7 @@ async fn poll_dpkg_log(log_path: &str, manager: &str, cursor_file: &str) -> Resu
             events.push(make_event(manager, pkg, Some(ver)));
         }
     }
-    write_line_cursor(&cursor_path, total)?;
+    super::cursor::write_cursor(&cursor_path, new_cursor).await?;
     Ok(events)
 }
 
@@ -174,9 +225,7 @@ fn parse_dpkg_line(line: &str) -> Option<(String, String)> {
 #[cfg(not(windows))]
 async fn poll_brew() -> Result<Vec<Event>> {
     let mut events = Vec::new();
-    let out = std::process::Command::new("brew")
-        .args(["list", "--versions"])
-        .output();
+    let out = run_command("brew", &["list", "--versions"]).await;
     let out = match out {
         Ok(o) if o.status.success() => o,
         // brew not installed, or some other failure, nothing to poll then.
@@ -184,7 +233,7 @@ async fn poll_brew() -> Result<Vec<Event>> {
     };
 
     let state_dir = Config::data_dir()?;
-    std::fs::create_dir_all(&state_dir)?;
+    tokio::fs::create_dir_all(&state_dir).await?;
     let state_path = state_dir.join("brew_state.json");
 
     let mut current: HashMap<String, String> = HashMap::new();
@@ -195,11 +244,7 @@ async fn poll_brew() -> Result<Vec<Event>> {
         }
     }
 
-    let previous: HashMap<String, String> = if state_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&state_path)?).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
+    let previous = diff_and_persist(&state_path, &current).await?;
 
     for (name, ver) in &current {
         let is_new = !previous.contains_key(name);
@@ -216,7 +261,6 @@ async fn poll_brew() -> Result<Vec<Event>> {
         }
     }
 
-    std::fs::write(&state_path, serde_json::to_string_pretty(&current)?)?;
     Ok(events)
 }
 
@@ -229,21 +273,17 @@ async fn poll_pip() -> Result<Vec<Event>> {
     // We try pip3 first since that's the more explicit, less ambiguous binary name on
     // systems where python2's pip might also be lying around, and only fall back to plain
     // `pip` if pip3 isn't found.
-    let out = std::process::Command::new("pip3")
-        .args(["list", "--format=json"])
-        .output()
-        .or_else(|_| {
-            std::process::Command::new("pip")
-                .args(["list", "--format=json"])
-                .output()
-        });
+    let out = match run_command("pip3", &["list", "--format=json"]).await {
+        Ok(o) => Ok(o),
+        Err(_) => run_command("pip", &["list", "--format=json"]).await,
+    };
     let out = match out {
         Ok(o) if o.status.success() => o,
         _ => return Ok(events),
     };
 
     let state_dir = Config::data_dir()?;
-    std::fs::create_dir_all(&state_dir)?;
+    tokio::fs::create_dir_all(&state_dir).await?;
     let state_path = state_dir.join("pip_state.json");
 
     let current: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
@@ -260,11 +300,7 @@ async fn poll_pip() -> Result<Vec<Event>> {
         })
         .collect();
 
-    let previous: HashMap<String, String> = if state_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&state_path)?).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
+    let previous = diff_and_persist(&state_path, &current_map).await?;
 
     for (name, ver) in &current_map {
         if !previous.contains_key(name) {
@@ -273,7 +309,6 @@ async fn poll_pip() -> Result<Vec<Event>> {
         }
     }
 
-    std::fs::write(&state_path, serde_json::to_string_pretty(&current_map)?)?;
     Ok(events)
 }
 
@@ -291,23 +326,31 @@ async fn poll_npm() -> Result<Vec<Event>> {
     }
 
     let state_dir = Config::data_dir()?;
-    std::fs::create_dir_all(&state_dir)?;
+    tokio::fs::create_dir_all(&state_dir).await?;
     let seen_path = state_dir.join("npm_seen_logs.json");
 
     let mut seen: std::collections::HashSet<String> = if seen_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&seen_path)?).unwrap_or_default()
+        tokio::fs::read_to_string(&seen_path)
+            .await
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     } else {
         std::collections::HashSet::new()
     };
 
     // We only look at the 5 most recently modified log files rather than the whole
     // directory (npm can accumulate hundreds of these over time), sorted newest first so
-    // "most recent activity" is what we check.
+    // "most recent activity" is what we check. Directory listing and metadata reads are
+    // still std::fs here (tokio::fs::read_dir's async iteration doesn't buy much for a
+    // directory this size, and we need synchronous metadata for the sort_by_key below
+    // anyway), the actual per-file content reads further down do go through tokio::fs.
     let mut entries: Vec<_> = std::fs::read_dir(&log_dir)?
         .filter_map(|e| e.ok())
         .collect();
     entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
 
+    let mut any_new = false;
     for entry in entries.iter().rev().take(5) {
         let path = entry.path();
         let name = path
@@ -322,7 +365,7 @@ async fn poll_npm() -> Result<Vec<Event>> {
             continue;
         }
 
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(content) = tokio::fs::read_to_string(&path).await {
             for line in content.lines() {
                 if line.contains("verbose cli")
                     && (line.contains("install") || line.contains("add"))
@@ -334,9 +377,15 @@ async fn poll_npm() -> Result<Vec<Event>> {
                 }
             }
             seen.insert(name);
+            any_new = true;
         }
     }
-    std::fs::write(&seen_path, serde_json::to_string(&seen)?)?;
+
+    // Same "skip the write if nothing changed" principle as diff_and_persist, just inlined
+    // here since this is tracking a HashSet of filenames rather than a HashMap snapshot.
+    if any_new {
+        tokio::fs::write(&seen_path, serde_json::to_string(&seen)?).await?;
+    }
     Ok(events)
 }
 
@@ -382,12 +431,14 @@ async fn poll_cargo() -> Result<Vec<Event>> {
     }
 
     let state_dir = Config::data_dir()?;
-    std::fs::create_dir_all(&state_dir)?;
+    tokio::fs::create_dir_all(&state_dir).await?;
     let state_path = state_dir.join("cargo_state.json");
 
     let mut current: HashMap<String, String> = HashMap::new();
     // registry/cache/ has one subdirectory per registry source (usually just
     // github.com-<hash> for crates.io), and each of those holds the actual .crate files.
+    // Directory walking stays std::fs here (it's a fast, local, small-fanout listing, not
+    // worth the ceremony of async iteration), same reasoning as the npm log directory scan.
     for source in std::fs::read_dir(&registry_dir)?.filter_map(|e| e.ok()) {
         if !source.path().is_dir() {
             continue;
@@ -396,10 +447,7 @@ async fn poll_cargo() -> Result<Vec<Event>> {
             let p = entry.path();
             if p.extension().map(|e| e == "crate").unwrap_or(false) {
                 if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    // Crate filenames are "name-version", and since crate names themselves
-                    // can contain hyphens, we split on the LAST hyphen rather than the
-                    // first, that's what correctly separates "my-crate" from its version.
-                    if let Some((name, ver)) = rsplit_once(stem, '-') {
+                    if let Some((name, ver)) = split_crate_filename(stem) {
                         current.insert(name.to_string(), ver.to_string());
                     }
                 }
@@ -407,11 +455,7 @@ async fn poll_cargo() -> Result<Vec<Event>> {
         }
     }
 
-    let previous: HashMap<String, String> = if state_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&state_path)?).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
+    let previous = diff_and_persist(&state_path, &current).await?;
 
     for (name, ver) in &current {
         if !previous.contains_key(name) {
@@ -427,16 +471,29 @@ async fn poll_cargo() -> Result<Vec<Event>> {
             ));
         }
     }
-    std::fs::write(&state_path, serde_json::to_string_pretty(&current)?)?;
     Ok(events)
 }
 
-// A tiny helper since Rust's standard rsplitn exists but returns an iterator I'd have to
-// juggle, this just gives me the clean (before, after) tuple I actually want for splitting
-// "serde-1.0.193" into ("serde", "1.0.193").
-fn rsplit_once(s: &str, c: char) -> Option<(&str, &str)> {
-    let pos = s.rfind(c)?;
-    Some((&s[..pos], &s[pos + 1..]))
+// Splits a cargo registry cache filename stem like "serde-1.0.193" into ("serde",
+// "1.0.193"). This used to just split on the LAST hyphen (str::rsplit_once), which works
+// for a plain release version but silently breaks on a semver prerelease: a stem like
+// "my-crate-1.0.0-beta.1" has a hyphen inside the prerelease suffix too, so splitting on
+// the last one gives ("my-crate-1.0.0", "beta.1"), folding part of the real version into
+// the name. Crate names can contain hyphens, and so can prerelease versions, so neither
+// "first hyphen" nor "last hyphen" is correct in general. A version always starts with a
+// digit, and crate name segments essentially never do, so scanning left to right for the
+// first hyphen immediately followed by a digit finds the real name/version boundary in both
+// the plain and prerelease case. It isn't a fully general solution (a crate name with a
+// digit-leading segment, like a hypothetical "foo-2fa", could still fool it), but it
+// correctly handles every case that actually matters here, which the old version didn't.
+fn split_crate_filename(stem: &str) -> Option<(&str, &str)> {
+    let bytes = stem.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'-' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+            return Some((&stem[..i], &stem[i + 1..]));
+        }
+    }
+    None
 }
 
 // ── Windows package managers ───────────
@@ -462,8 +519,7 @@ async fn poll_choco() -> Result<Vec<Event>> {
 
 #[cfg(windows)]
 async fn poll_scoop() -> Result<Vec<Event>> {
-    let out = std::process::Command::new("scoop").args(["list"]).output();
-    // ... similar pattern
+    let _out = run_command("scoop", &["list"]).await;
     // TODO: this one's still a stub, I ran low on time to build and test the scoop output
     // parser properly on a real Windows box before the deadline. Returning empty for now
     // rather than guessing at scoop's exact list format and shipping something wrong.
@@ -478,14 +534,14 @@ async fn poll_windows_pm(
     parse_line: fn(&str) -> Option<(String, String)>,
 ) -> Result<Vec<Event>> {
     let mut events = Vec::new();
-    let out = std::process::Command::new(cmd).args(args).output();
+    let out = run_command(cmd, args).await;
     let out = match out {
         Ok(o) if o.status.success() => o,
         _ => return Ok(events),
     };
 
     let state_dir = Config::data_dir()?;
-    std::fs::create_dir_all(&state_dir)?;
+    tokio::fs::create_dir_all(&state_dir).await?;
     let state_path = state_dir.join(state_file);
 
     let mut current: HashMap<String, String> = HashMap::new();
@@ -495,18 +551,13 @@ async fn poll_windows_pm(
         }
     }
 
-    let previous: HashMap<String, String> = if state_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&state_path)?).unwrap_or_default()
-    } else {
-        HashMap::new()
-    };
+    let previous = diff_and_persist(&state_path, &current).await?;
 
     for (name, ver) in &current {
         if !previous.contains_key(name) {
             events.push(make_event(cmd, name.clone(), Some(ver.clone())));
         }
     }
-    std::fs::write(&state_path, serde_json::to_string_pretty(&current)?)?;
     Ok(events)
 }
 
@@ -534,30 +585,6 @@ fn parse_choco_line(line: &str) -> Option<(String, String)> {
     } else {
         None
     }
-}
-
-// ── Shared helpers ──────────────────
-// These three are used across apt/pkg (and really anything doing line-based log tailing)
-// to persist and recover "how far did we already read" between daemon restarts.
-
-fn read_line_cursor(path: &PathBuf) -> Result<usize> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    Ok(std::fs::read_to_string(path)?.trim().parse().unwrap_or(0))
-}
-
-fn write_line_cursor(path: &PathBuf, pos: usize) -> Result<()> {
-    std::fs::write(path, pos.to_string())?;
-    Ok(())
-}
-
-fn read_lines_from(path: &PathBuf) -> Result<Vec<String>> {
-    let file = File::open(path)?;
-    Ok(BufReader::new(file)
-        .lines()
-        .filter_map(|l| l.ok())
-        .collect())
 }
 
 // ── Tests (TEST-002 + TEST-003 pip diff) ──
@@ -596,11 +623,34 @@ mod tests {
     }
 
     #[test]
-    fn test_rsplit_cargo_crate() {
+    fn test_split_crate_filename_plain_version() {
         assert_eq!(
-            rsplit_once("serde-1.0.193", '-'),
+            split_crate_filename("serde-1.0.193"),
             Some(("serde", "1.0.193"))
         );
+    }
+
+    #[test]
+    fn test_split_crate_filename_hyphenated_name() {
+        assert_eq!(
+            split_crate_filename("my-cool-crate-1.2.3"),
+            Some(("my-cool-crate", "1.2.3"))
+        );
+    }
+
+    #[test]
+    fn test_split_crate_filename_prerelease_version() {
+        // This is the bug the old str::rsplit_once-based version had: splitting on the
+        // LAST hyphen puts part of a prerelease version into the name instead.
+        assert_eq!(
+            split_crate_filename("my-crate-1.0.0-beta.1"),
+            Some(("my-crate", "1.0.0-beta.1"))
+        );
+    }
+
+    #[test]
+    fn test_split_crate_filename_no_version_is_none() {
+        assert_eq!(split_crate_filename("just-a-name"), None);
     }
 
     // TEST-003: pip diff logic
@@ -632,17 +682,112 @@ mod tests {
         assert!(new_pkgs.is_empty());
     }
 
-    #[test]
-    fn test_cursor_roundtrip() {
+    #[tokio::test]
+    async fn test_diff_and_persist_returns_previous_and_writes_current() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("x.cursor");
-        write_line_cursor(&p, 99).unwrap();
-        assert_eq!(read_line_cursor(&p).unwrap(), 99);
+        let state_path = dir.path().join("state.json");
+
+        let first: HashMap<String, String> = [("flask".into(), "3.0.0".into())].into();
+        let previous = diff_and_persist(&state_path, &first).await.unwrap();
+        assert!(
+            previous.is_empty(),
+            "no prior state should mean an empty map"
+        );
+
+        let second: HashMap<String, String> = [
+            ("flask".into(), "3.0.0".into()),
+            ("requests".into(), "2.28.0".into()),
+        ]
+        .into();
+        let previous = diff_and_persist(&state_path, &second).await.unwrap();
+        assert_eq!(
+            previous, first,
+            "second call should see what the first call wrote"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_diff_and_persist_skips_write_when_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("state.json");
+        let snapshot: HashMap<String, String> = [("flask".into(), "3.0.0".into())].into();
+
+        diff_and_persist(&state_path, &snapshot).await.unwrap();
+        let mtime_after_first_write = std::fs::metadata(&state_path).unwrap().modified().unwrap();
+
+        // A tiny sleep so a real rewrite (if it happened) would produce a detectably later
+        // mtime on filesystems with coarse timestamp resolution.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        diff_and_persist(&state_path, &snapshot).await.unwrap();
+        let mtime_after_second_call = std::fs::metadata(&state_path).unwrap().modified().unwrap();
+
+        assert_eq!(
+            mtime_after_first_write, mtime_after_second_call,
+            "identical snapshot should not have triggered a second write"
+        );
     }
 
     #[test]
     fn test_record_last_command() {
         record_last_command("cargo build");
         assert_eq!(last_command(), Some("cargo build".into()));
+    }
+
+    // winget/choco's parsers only compile on Windows (see their #[cfg(windows)] gates
+    // above), so these tests are gated the same way. Before this, neither parser had any
+    // test coverage at all, unlike dpkg/npm/cargo's parsing above, and CI didn't build on
+    // windows-latest either, so a regression here could have gone unnoticed indefinitely.
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_winget_line_valid_entry() {
+        let line = "Firefox     Mozilla.Firefox     119.0.1     120.0     winget";
+        assert_eq!(
+            parse_winget_line(line),
+            Some(("Firefox".into(), "119.0.1".into()))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_winget_line_skips_header_and_separator() {
+        assert_eq!(
+            parse_winget_line("Name   Id   Version   Available   Source"),
+            None
+        );
+        assert_eq!(
+            parse_winget_line("---------------------------------------"),
+            None
+        );
+        assert_eq!(parse_winget_line(""), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_winget_line_too_few_columns_is_none() {
+        assert_eq!(parse_winget_line("OnlyOneColumn"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_choco_line_valid_entry() {
+        assert_eq!(
+            parse_choco_line("git 2.42.0"),
+            Some(("git".into(), "2.42.0".into()))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_choco_line_skips_footer() {
+        // choco list ends with a summary line like "5 packages installed.", and the
+        // interactive version prints a "Chocolatey vX.Y.Z" banner first, neither of those
+        // should be mistaken for an actual package entry.
+        assert_eq!(parse_choco_line("Chocolatey v2.2.2"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_choco_line_too_few_columns_is_none() {
+        assert_eq!(parse_choco_line("onlyname"), None);
     }
 }

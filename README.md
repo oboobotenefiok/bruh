@@ -69,7 +69,7 @@ Without the graph, the causal chain reconstruction that powers bruh's core demo 
 
 **Note**: 32-bit and less common architectures are not provided with official binaries.
 
-Quickly, temporarily avoid the use of punctuations when querying without starting and ending double quotes.
+Always wrap your query in double quotes (`bruh "what did I break yesterday"`), otherwise your shell will split it into separate words before bruh ever sees it, and any special characters in it (`!`, `*`, `?`, `$`, and friends) may get interpreted by the shell instead of reaching your query.
 ---
 
 ## Installation
@@ -148,26 +148,25 @@ Now, here is a feature that wasn't on my mind in the very early process of the p
 
 bruh detects when you use an unknown package manager in your shell history. It then:
 
-1. Searches DuckDuckGo for information about that manager
-2. Runs the search snippets through an LLM (Gemini → Groq → Claude cascade)
-3. Extracts the install verb, registry path, log path, and confidence score
-4. Stores the profile in Cognee and caches it locally
+1. Sends the manager name straight to an LLM cascade (Gemini → Groq → Claude), asking it to use what it already knows rather than searching the web, an earlier version of this tried a DuckDuckGo search step first, but it added latency and a failure mode without adding real accuracy, the models already know this stuff from training
+2. Extracts the install verb, registry path, log path, and confidence score
+3. Stores the profile in Cognee and caches it locally
 
 ```
 $ bruh managers --learn pnpm
 
-  Searching DuckDuckGo for "pnpm"…  ✓ (3 snippets)
-
+  Running LLM extraction cascade:
     Trying gemini…  ✓ (High confidence)
 
-  Result:
+  Result: Extracted profile:
     install verb:   add
     remove verb:    remove
     list command:   list
     registry:       ~/.pnpm-store
+    confidence:     High
 
-  Stored in Cognee  ✓
-  Cached locally    ✓
+  Storing in Cognee graph…  ✓
+  Caching locally…          ✓
 ```
 
 ---

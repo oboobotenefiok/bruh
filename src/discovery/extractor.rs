@@ -6,9 +6,11 @@
 // means adding a fourth provider later is just: write a struct that implements the trait,
 // add it to the list in ProviderCascade::from_config, done. No branching logic to touch.
 
-use crate::cli::Config;
-use crate::discovery::providers::{ClaudeBackend, GeminiBackend, GroqBackend};
-use crate::events::PackageManagerProfile;
+use crate::{
+    cli::Config,
+    discovery::providers::{ClaudeBackend, GeminiBackend, GroqBackend},
+    events::PackageManagerProfile,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use log::{info, warn};
@@ -35,9 +37,15 @@ pub struct ProviderCascade {
     backends: Vec<Box<dyn ExtractorBackend>>,
 }
 
+/// The default provider order, used both as the fallback order for providers not
+/// explicitly listed in the user's llm_priority config, and as the single source of truth
+/// cli/providers.rs's status display reads from, so its "active provider" line can never
+/// drift out of sync with what the cascade actually does.
+pub const PROVIDER_ORDER: &[&str] = &["gemini", "groq", "claude"];
+
 impl ProviderCascade {
     // Builds the cascade in the order the user configured (config.llm_priority), falling
-    // back to whatever order is left for any providers they didn't explicitly rank. I use a
+    // back to PROVIDER_ORDER for any providers they didn't explicitly rank. I use a
     // HashMap here as scratch space just so I can remove() entries as I place them into the
     // ordered Vec, that way nothing gets duplicated and nothing gets dropped.
     pub fn from_config(config: &Config) -> Self {
@@ -76,11 +84,14 @@ impl ProviderCascade {
             .filter_map(|name| map.remove(name.as_str()))
             .collect();
 
-        // Append any providers not in the priority list
-        // Whatever's left in the map (providers the user didn't mention in their config)
-        // still gets appended at the end, so we never silently drop a working provider just
-        // because the user forgot to list it.
-        backends.extend(map.into_values());
+        // Append any providers not in the priority list, walking PROVIDER_ORDER rather than
+        // just draining the HashMap directly. HashMap's iteration order isn't guaranteed to
+        // stay the same between runs, so without this, the fallback order for providers the
+        // user didn't rank (and therefore which one effectively goes first when llm_priority
+        // doesn't mention everyone) could silently change from one run of bruh to the next
+        // even with identical config. Walking PROVIDER_ORDER and removing from the map as we
+        // go gives the same nothing-duplicated, nothing-dropped guarantee, just deterministic.
+        backends.extend(PROVIDER_ORDER.iter().filter_map(|name| map.remove(name)));
         Self { backends }
     }
 
@@ -171,4 +182,86 @@ pub async fn extract_with_cascade_verbose(
     }
 
     anyhow::bail!("All LLM providers failed for '{}'", manager_name)
+}
+
+// This used to be copy-pasted into gemini.rs, groq.rs, and claude.rs separately, identical
+// except for which provider name showed up in the error message. Comparing all three side
+// by side, there was never actually any provider-specific logic living inside this
+// function, the real per-provider differences (prompt wording, markdown-fence handling,
+// response nesting) all happen upstream, before build_profile is ever called. So there was
+// nothing this needed abstraction to fit around, it already fit, three times over.
+//
+// Takes whatever text the model spat out, finds the first '{' and last '}' to strip away
+// any stray prose the model added despite our instructions, then parses what's left as JSON
+// and maps it onto our PackageManagerProfile struct. Falls back to sensible verb defaults
+// for any field the model didn't return, better to have a guess than to fail discovery
+// entirely over one missing key.
+pub(crate) fn build_profile(
+    name: &str,
+    text: &str,
+    provider: &str,
+) -> Result<PackageManagerProfile> {
+    use crate::events::Confidence;
+    use anyhow::Context;
+    use chrono::Utc;
+
+    let start = text.find('{').unwrap_or(0);
+    let end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
+    let v: serde_json::Value = serde_json::from_str(&text[start..end])
+        .with_context(|| format!("Failed to parse JSON from {} response", provider))?;
+
+    Ok(PackageManagerProfile {
+        node_type: "PackageManagerProfile".into(),
+        name: name.to_string(),
+        log_path: v["log_path"].as_str().map(|s| s.to_string()),
+        registry_path: v["registry_path"].as_str().map(|s| s.to_string()),
+        install_verb: v["install_verb"].as_str().unwrap_or("install").to_string(),
+        remove_verb: v["remove_verb"].as_str().unwrap_or("remove").to_string(),
+        list_command: v["list_command"].as_str().unwrap_or("list").to_string(),
+        discovered_at: Utc::now(),
+        confidence: match v["confidence"].as_str().unwrap_or("medium") {
+            "high" => Confidence::High,
+            "low" => Confidence::Low,
+            _ => Confidence::Medium,
+        },
+        first_seen_command: format!("{} install <package>", name),
+        discovered_by_provider: Some(provider.to_string()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_profile_parses_clean_json() {
+        let text = r#"{"install_verb":"install","remove_verb":"uninstall","list_command":"list","log_path":null,"registry_path":null,"confidence":"high"}"#;
+        let p = build_profile("pnpm", text, "gemini").unwrap();
+        assert_eq!(p.install_verb, "install");
+        assert_eq!(p.remove_verb, "uninstall");
+        assert_eq!(p.discovered_by_provider, Some("gemini".into()));
+    }
+
+    #[test]
+    fn build_profile_strips_surrounding_prose_and_code_fences() {
+        let text = "Sure, here's the JSON:\n```json\n{\"install_verb\":\"add\",\"confidence\":\"low\"}\n```\nHope that helps!";
+        let p = build_profile("pnpm", text, "claude").unwrap();
+        assert_eq!(p.install_verb, "add");
+        // remove_verb wasn't present, so it should fall back to the sensible default.
+        assert_eq!(p.remove_verb, "remove");
+    }
+
+    #[test]
+    fn build_profile_defaults_missing_fields() {
+        let text = "{}";
+        let p = build_profile("mystery-tool", text, "groq").unwrap();
+        assert_eq!(p.install_verb, "install");
+        assert_eq!(p.remove_verb, "remove");
+        assert_eq!(p.list_command, "list");
+    }
+
+    #[test]
+    fn build_profile_fails_on_no_json_at_all() {
+        assert!(build_profile("pnpm", "no braces here", "gemini").is_err());
+    }
 }

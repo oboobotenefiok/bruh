@@ -3,8 +3,19 @@
 ### WeMakeDevs × Cognee Hackathon | June 29 – July 5, 2026
 
 **Author:** oboobotenefiok
-**Status:** Pre-build planning document
+**Status:** Pre-build planning document, written and frozen before coding began on June 29, per the hackathon's own rule that a plan has to predate the build. It's kept as-written from here down, on purpose, as the historical record of that plan, rather than edited after the fact to match whatever actually got built.
 **Last Updated:** June 28, 2026
+
+**Read this if you're comparing the plan to the code:** a few specific things below changed
+during the build, for good reasons, and this document was deliberately NOT rewritten to hide
+that. The two most visible: the CLI ended up hand-rolling its own argument parsing instead of
+using `clap` (Termux/mobile compile times and RAM were tighter than expected, see main.rs's
+own comment on this), and the offline buffer ended up as append-only NDJSON instead of SQLite
+(no native compilation step, a real win for cross-compiling to Termux/Android, see the
+"Why NDJSON instead of SQLite" section of README.md for the full reasoning). The self-learning
+discovery pipeline also dropped its planned DuckDuckGo search step once real-world testing
+showed it added latency and a failure mode without adding real accuracy. README.md describes
+what actually shipped, this document describes what was planned going in.
 
 ---
 

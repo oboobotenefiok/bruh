@@ -6,91 +6,91 @@
 // ourselves from raw events, since Cognee's graph already has the full picture and doing it
 // there means we don't need to duplicate that logic locally.
 
-use crate::cli::output::{print_footer, print_header};
-use crate::cognee::recall;
+use crate::{cli::output::print_stats_box, cognee::recall};
 use anyhow::Result;
-use prettytable::{Attr, Cell, Row, Table};
+
+// The exact keys build_stats_table() below looks for. Kept as one list so the prompt and
+// the parser can't quietly drift apart the way they could if these were just typed out
+// twice.
+const STATS_FIELDS: &[(&str, &str)] = &[
+    ("Total commands", "commands"),
+    ("Packages installed", "packages_installed"),
+    ("Git commits", "git_commits"),
+    ("Sessions", "sessions"),
+    ("Most common error", "most_common_error"),
+    ("Avg fix time", "avg_fix_time"),
+    ("Most productive hour", "most_productive_hour"),
+    ("Longest session", "longest_session"),
+];
 
 pub async fn run() -> Result<()> {
-    // This prompt is deliberately specific about the exact fields we want back, matching
-    // the keys build_stats_table looks for below, so if the LLM cooperates we get clean
-    // structured output rather than having to scrape numbers out of free-form prose.
-    let response = recall(
-        "Give me a structured summary of all developer activity. \
-         Include: total commands, packages installed by manager, git commits, \
-         sessions count, most common errors, average fix time in seconds, \
-         most productive hour of day, longest session duration.",
-    )
-    .await?;
+    // Earlier this just described the fields we wanted in prose ("Include: total commands,
+    // packages installed by manager, ...") and hoped the model would happen to answer back
+    // with matching JSON. It sometimes did and sometimes didn't, since nothing in the prompt
+    // actually told it to respond in JSON at all, so the clean table path below was mostly
+    // going unused and falling back to raw text instead. Spelling out the exact keys and
+    // saying "respond with only JSON" gives the model a format it can't really misread,
+    // so the table renders far more often.
+    let keys = STATS_FIELDS
+        .iter()
+        .map(|(_, key)| *key)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let prompt = format!(
+        "Give me a structured summary of all developer activity. Respond with a single \
+         JSON object and nothing else, no prose before or after it, using exactly these \
+         keys: {}. Use your best estimate for any value you can't determine precisely, \
+         omit a key entirely rather than guessing wildly if you have no signal for it at all.",
+        keys
+    );
 
-    // Extract text from response
+    let response = recall(&prompt).await?;
     let text = extract_text(&response);
-
-    // Render as a proper table
     render_stats_table(&text);
-
     Ok(())
 }
 
 /// Render a clean table from the stats response.
 fn render_stats_table(text: &str) {
-    print_header("Developer Activity Report");
-    println!();
-
     let json = extract_json(text);
 
-    // If we have structured data, render a table
-    if !json.is_null() {
-        let mut table = Table::new();
-
-        // Header row with bold style
-        let header_row = Row::new(vec![
-            Cell::new("Metric").with_style(Attr::Bold),
-            Cell::new("Value").with_style(Attr::Bold),
-        ]);
-        table.add_row(header_row);
-
-        // Data rows in a specific order
-        let fields = [
-            ("Total commands", "commands"),
-            ("Packages installed", "packages_installed"),
-            ("Git commits", "git_commits"),
-            ("Sessions", "sessions"),
-            ("Most common error", "most_common_error"),
-            ("Avg fix time", "avg_fix_time"),
-            ("Most productive hour", "most_productive_hour"),
-            ("Longest session", "longest_session"),
-        ];
-
-        let mut has_data = false;
-        for (label, key) in &fields {
-            if let Some(val) = json.get(key) {
-                let s = match val {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                table.add_row(Row::new(vec![
-                    Cell::new(label),
-                    Cell::new(&s),
-                ]));
-                has_data = true;
-            }
-        }
-
-        if has_data {
-            // Print the table
-            table.printstd();
-        } else {
-            // No structured data found, fall back to raw text
-            print_raw_stats(text);
-        }
+    if let Some(lines) = build_stats_table(&json) {
+        print_stats_box(&lines);
     } else {
-        // No JSON found, fall back to raw text
+        // No structured data found, fall back to raw text inside the same box styling
+        // the rest of the CLI uses, rather than a bare, uncolored dump.
+        crate::cli::output::print_header("Developer Activity Report");
+        println!();
         print_raw_stats(text);
+        println!();
+        crate::cli::output::print_footer();
+    }
+}
+
+/// Pulls whichever of the known fields are actually present in the parsed JSON into the
+/// (label, value) pairs print_stats_box() wants. Returns None if nothing matched at all, so
+/// the caller knows to fall back to raw text instead of printing an empty box.
+fn build_stats_table(json: &serde_json::Value) -> Option<Vec<(&'static str, String)>> {
+    if json.is_null() {
+        return None;
     }
 
-    println!();
-    print_footer();
+    let mut lines = Vec::new();
+    for (label, key) in STATS_FIELDS {
+        if let Some(val) = json.get(key) {
+            let s = match val {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            lines.push((*label, s));
+        }
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
 }
 
 /// Fallback: print raw text when JSON parsing fails.

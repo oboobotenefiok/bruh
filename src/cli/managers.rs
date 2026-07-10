@@ -6,15 +6,11 @@
 // the same pipeline daemon/discovery.rs triggers silently in the background, but here for a
 // human to actually watch happen.
 
-use crate::cli::output::{bold, cyan, dim, green, orange, print_footer, print_header};
-use crate::cli::Config;
-use crate::discovery;
+use crate::{
+    cli::output::{bold, cyan, dim, green, orange, print_footer, print_header},
+    discovery::BOOTSTRAPPED_MANAGERS,
+};
 use anyhow::Result;
-
-// Kept as a plain list here too (separately from daemon/discovery.rs's bootstrapped()) just
-// for display purposes, this one's only used to print the "always available" line, no
-// runtime logic depends on it matching exactly, though obviously it should.
-const BOOTSTRAPPED: &[&str] = &["apt", "pip", "npm", "cargo", "pkg", "brew"];
 
 pub async fn run(learn: Option<String>) -> Result<()> {
     if let Some(name) = learn {
@@ -32,7 +28,7 @@ fn run_list() -> Result<()> {
     println!();
 
     println!("  {} (always available):", bold("Bootstrapped"));
-    println!("  {}", dim(&BOOTSTRAPPED.join("  ")));
+    println!("  {}", dim(&BOOTSTRAPPED_MANAGERS.join("  ")));
     println!();
 
     // Load learned managers from cache
@@ -157,7 +153,17 @@ async fn run_learn(name: &str) -> Result<()> {
     print!("  Storing in Cognee graph… ");
     std::io::stdout().flush()?;
     match crate::discovery::register::store_profile(&profile).await {
-        Ok(()) => println!("{}", green("✓")),
+        Ok(crate::discovery::register::StoreOutcome::Stored) => println!("{}", green("✓")),
+        // This used to print the same green checkmark as an actual store, which meant
+        // running --learn without a Cognee key configured looked exactly like success.
+        // Now it says plainly that the store was skipped, and how to fix it.
+        Ok(crate::discovery::register::StoreOutcome::NotConfigured) => {
+            println!(
+                "{} (skipped, no Cognee key configured, run {})",
+                orange("○"),
+                bold("bruh init")
+            );
+        }
         Err(e) => println!("{} ({})", orange("✗"), e),
     }
 

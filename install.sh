@@ -132,12 +132,20 @@ green "  ✓  bruh installed successfully"
 echo ""
 
 # ── Run init ──────────────────────────────────────────────────────────────────
-# Defaulting to "yes" on the prompt (empty input counts as yes) since running init right
-# after install is almost always what someone wants, and it means a first-time user can
-# just hit enter through the whole install-and-setup flow without having to remember to run
-# a second command afterward.
-printf "  Run bruh init now? [Y/n]: "
-read -r ANSWER
+# When this script is run the way the README recommends (curl ... | sh), stdin is the
+# script's own bytes, not the user's terminal, so a plain `read` here can't reliably get
+# real interactive input. [ -t 0 ] is the standard, portable way to check whether stdin is
+# an actual terminal before even trying to prompt: if it's not, we skip straight to running
+# init (the same thing an empty answer to the prompt would do anyway) instead of leaving the
+# outcome to however that specific shell happens to handle reading from an already-consumed
+# pipe.
+if [ -t 0 ]; then
+    printf "  Run bruh init now? [Y/n]: "
+    read -r ANSWER
+else
+    dim "  Non-interactive install detected, running 'bruh init' with defaults."
+    ANSWER="y"
+fi
 if [ -z "$ANSWER" ] || [ "$ANSWER" = "y" ] || [ "$ANSWER" = "Y" ]; then
     echo ""
     "${INSTALL_DIR}/${BIN_NAME}" init

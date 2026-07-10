@@ -6,8 +6,10 @@
 // just a specially crafted recall() prompt scoped to the current directory, all the real
 // intelligence is Cognee's, we're just asking the right question.
 
-use crate::cli::output::{dim, print_explain};
-use crate::cognee::recall;
+use crate::{
+    cli::output::{dim, print_explain},
+    cognee::recall,
+};
 use anyhow::Result;
 use std::io::Write;
 

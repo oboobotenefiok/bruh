@@ -3,11 +3,12 @@
 // that most people won't have ANTHROPIC_API_KEY set specifically for this side feature when
 // they're already using it elsewhere. If Gemini and Groq both fail or aren't configured,
 // this is the safety net.
-use crate::discovery::extractor::ExtractorBackend;
-use crate::events::{Confidence, PackageManagerProfile};
+use crate::{
+    discovery::extractor::{build_profile, ExtractorBackend},
+    events::PackageManagerProfile,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Utc;
 use serde_json::Value;
 
 // CONFIG-003: resolved key handed in at construction time (config value first,
@@ -53,7 +54,7 @@ impl ExtractorBackend for ClaudeBackend {
         // Anthropic's Messages API wants the key in an x-api-key header (not Authorization:
         // Bearer like Groq), plus an explicit anthropic-version header. Small detail but it
         // trips people up the first time they wire this up.
-        let client = reqwest::Client::new();
+        let client = super::http_client();
         let resp = client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &api_key)
@@ -85,29 +86,4 @@ impl ExtractorBackend for ClaudeBackend {
 
         build_profile(manager_name, text, "claude")
     }
-}
-
-fn build_profile(name: &str, text: &str, provider: &str) -> Result<PackageManagerProfile> {
-    let start = text.find('{').unwrap_or(0);
-    let end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-    let v: Value = serde_json::from_str(&text[start..end])
-        .context("Failed to parse JSON from Claude response")?;
-
-    Ok(PackageManagerProfile {
-        node_type: "PackageManagerProfile".into(),
-        name: name.to_string(),
-        log_path: v["log_path"].as_str().map(|s| s.to_string()),
-        registry_path: v["registry_path"].as_str().map(|s| s.to_string()),
-        install_verb: v["install_verb"].as_str().unwrap_or("install").to_string(),
-        remove_verb: v["remove_verb"].as_str().unwrap_or("remove").to_string(),
-        list_command: v["list_command"].as_str().unwrap_or("list").to_string(),
-        discovered_at: Utc::now(),
-        confidence: match v["confidence"].as_str().unwrap_or("medium") {
-            "high" => Confidence::High,
-            "low" => Confidence::Low,
-            _ => Confidence::Medium,
-        },
-        first_seen_command: format!("{} install <package>", name),
-        discovered_by_provider: Some(provider.to_string()),
-    })
 }

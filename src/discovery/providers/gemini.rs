@@ -1,11 +1,12 @@
 // This is the Gemini backend for the discovery cascade. It's the first one we try because
 // Google's free tier on gemini-1.5-flash is generous and the model is fast enough that it
 // doesn't hold up the daemon for long when it hits an unknown package manager.
-use crate::discovery::extractor::ExtractorBackend;
-use crate::events::{Confidence, PackageManagerProfile};
+use crate::{
+    discovery::extractor::{build_profile, ExtractorBackend},
+    events::PackageManagerProfile,
+};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Utc;
 use serde_json::Value;
 
 // CONFIG-003: used to be a zero-sized struct that reached into env::var() directly. Now
@@ -60,8 +61,11 @@ impl ExtractorBackend for GeminiBackend {
 
         // Gemini's REST API takes the key as a query param rather than a header, which is a
         // bit unusual compared to the other two providers, but that's just how their API is
-        // shaped so we go with it.
-        let client = reqwest::Client::new();
+        // shaped so we go with it. Worth knowing if you ever add request logging here: the
+        // key lives in the URL for this one provider, so never log the full request URL for
+        // a Gemini call, unlike Claude/Groq's header-based auth, that would put the raw key
+        // straight into daemon.log in plaintext.
+        let client = super::http_client();
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
             api_key
@@ -96,37 +100,4 @@ impl ExtractorBackend for GeminiBackend {
 
         build_profile(manager_name, text, "gemini")
     }
-}
-
-// This is shared logic (well, duplicated across the three provider files really, I know
-// that's not DRY but each provider's response shape is different enough going in that it
-// felt more readable to keep it separate for now than to abstract too early).
-// It takes whatever text the model spat out, finds the first '{' and last '}' to strip
-// away any stray prose the model added despite our instructions, then parses what's left
-// as JSON and maps it onto our PackageManagerProfile struct.
-fn build_profile(name: &str, text: &str, provider: &str) -> Result<PackageManagerProfile> {
-    let start = text.find('{').unwrap_or(0);
-    let end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
-    let v: Value = serde_json::from_str(&text[start..end])
-        .context("Failed to parse JSON from provider response")?;
-
-    Ok(PackageManagerProfile {
-        node_type: "PackageManagerProfile".into(),
-        name: name.to_string(),
-        log_path: v["log_path"].as_str().map(|s| s.to_string()),
-        registry_path: v["registry_path"].as_str().map(|s| s.to_string()),
-        // We fall back to sensible defaults (install/remove/list) if the model somehow
-        // didn't return a field, better to have a guess than to fail the whole discovery.
-        install_verb: v["install_verb"].as_str().unwrap_or("install").to_string(),
-        remove_verb: v["remove_verb"].as_str().unwrap_or("remove").to_string(),
-        list_command: v["list_command"].as_str().unwrap_or("list").to_string(),
-        discovered_at: Utc::now(),
-        confidence: match v["confidence"].as_str().unwrap_or("medium") {
-            "high" => Confidence::High,
-            "low" => Confidence::Low,
-            _ => Confidence::Medium,
-        },
-        first_seen_command: format!("{} install <package>", name),
-        discovered_by_provider: Some(provider.to_string()),
-    })
 }

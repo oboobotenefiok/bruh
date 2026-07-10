@@ -5,10 +5,27 @@
 // actually discovered so far. Handy for figuring out why discovery picked a particular
 // provider, or why it's not working at all.
 
-use crate::cli::output::{bold, cyan, dim, green, orange, print_footer, print_header};
-use crate::cli::Config;
-use crate::discovery::cache::load_learned_managers;
+use crate::{
+    cli::{
+        output::{bold, cyan, dim, green, orange, print_footer, print_header},
+        Config,
+    },
+    discovery::{cache::load_learned_managers, extractor::PROVIDER_ORDER},
+};
 use anyhow::Result;
+
+/// Which provider ProviderCascade::from_config would actually try first: the earliest
+/// entry in the configured priority list that's available, falling back to PROVIDER_ORDER
+/// for anything not explicitly ranked. Pulled out as its own function so it can be tested
+/// directly against the exact ordering rules from_config uses, without needing to run the
+/// whole `bruh providers` command end to end.
+fn active_provider<'a>(llm_priority: &'a [String], available: &[&'a str]) -> Option<&'a str> {
+    llm_priority
+        .iter()
+        .map(|s| s.as_str())
+        .chain(PROVIDER_ORDER.iter().copied())
+        .find(|id| available.contains(id))
+}
 
 pub async fn run() -> Result<()> {
     let config = Config::load()?;
@@ -19,11 +36,18 @@ pub async fn run() -> Result<()> {
     // CONFIG-003: env_var here is just the label shown in the "set X to enable" hint, the
     // actual availability check below goes through Config::resolved_*_key() now, so a key
     // set via `bruh config set` shows up as available too, not just env vars.
-    let providers = [
-        ("gemini", "GOOGLE_AI_API_KEY", "Gemini Flash"),
-        ("groq", "GROQ_API_KEY", "Groq (Llama-3)"),
-        ("claude", "ANTHROPIC_API_KEY", "Claude Haiku"),
-    ];
+    //
+    // Display metadata (env var name, friendly label) for each provider in PROVIDER_ORDER.
+    // This used to be its own separate array typing out "gemini"/"groq"/"claude" a second
+    // time in a fixed order, now it's built by mapping over the single shared list instead.
+    let display_meta = |id: &str| -> (&'static str, &'static str) {
+        match id {
+            "gemini" => ("GOOGLE_AI_API_KEY", "Gemini Flash"),
+            "groq" => ("GROQ_API_KEY", "Groq (Llama-3)"),
+            "claude" => ("ANTHROPIC_API_KEY", "Claude Haiku"),
+            _ => ("", ""),
+        }
+    };
 
     // Count how many learned managers each provider discovered
     // This is purely cosmetic info, doesn't affect discovery behavior at all, just gives
@@ -38,10 +62,12 @@ pub async fn run() -> Result<()> {
 
     let mut available: Vec<&str> = Vec::new();
 
-    // One row per provider, in the fixed display order above (not the user's configured
-    // priority order, that's shown separately below). We compute each provider's position
-    // in the priority list just for the "primary" / "fallback #N" label.
-    for (id, env_var, display) in &providers {
+    // One row per provider, in PROVIDER_ORDER for the display itself (not the user's
+    // configured priority order, that's shown separately below as its own line). We compute
+    // each provider's position in the priority list just for the "primary" / "fallback #N"
+    // label on each row.
+    for id in PROVIDER_ORDER {
+        let (env_var, display) = display_meta(id);
         let has_key = match *id {
             "gemini" => config.resolved_gemini_key().is_some(),
             "groq" => config.resolved_groq_key().is_some(),
@@ -78,18 +104,15 @@ pub async fn run() -> Result<()> {
 
     println!();
 
-    // Summary line at the bottom: either "discovery is fully off, here's how to enable it"
-    // or "discovery is on, here's what would actually get used right now" (which is just
-    // the first available provider in priority order, matching ProviderCascade's behavior).
-    if available.is_empty() {
-        println!("  {} Discovery is {}", dim("→"), orange("DISABLED"));
-        println!("  Configure at least one provider to enable package manager discovery.");
-        println!();
-        println!("  Free options:");
-        println!("    Gemini:  {}", cyan("https://aistudio.google.com"));
-        println!("    Groq:    {}", cyan("https://console.groq.com"));
-    } else {
-        let active = available[0];
+    // The active provider is whichever one ProviderCascade::from_config would actually try
+    // first: the earliest entry in the user's llm_priority that has a key, falling back to
+    // PROVIDER_ORDER for anything not explicitly ranked. This used to just take available[0]
+    // from the fixed gemini/groq/claude display order, which meant a user with llm_priority
+    // set to ["claude", "gemini", "groq"] would see this claim gemini was active even though
+    // the cascade would genuinely try claude first.
+    let active = active_provider(&config.llm_priority, &available);
+
+    if let Some(active) = active {
         println!(
             "  {} Discovery is {} — active provider: {}",
             dim("→"),
@@ -105,9 +128,59 @@ pub async fn run() -> Result<()> {
             "  Change priority: {}",
             dim("bruh config set llm_priority gemini,claude,groq")
         );
+    } else {
+        println!("  {} Discovery is {}", dim("→"), orange("DISABLED"));
+        println!("  Configure at least one provider to enable package manager discovery.");
+        println!();
+        println!("  Free options:");
+        println!("    Gemini:  {}", cyan("https://aistudio.google.com"));
+        println!("    Groq:    {}", cyan("https://console.groq.com"));
     }
 
     println!();
     print_footer();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_provider_respects_configured_priority_over_display_order() {
+        // This is the exact bug: all three have keys, but the user ranked claude first.
+        // The old code took available[0] from the fixed gemini/groq/claude display order
+        // and would have said "gemini" here, even though the cascade tries claude first.
+        let priority = vec![
+            "claude".to_string(),
+            "gemini".to_string(),
+            "groq".to_string(),
+        ];
+        let available = vec!["gemini", "groq", "claude"];
+        assert_eq!(active_provider(&priority, &available), Some("claude"));
+    }
+
+    #[test]
+    fn active_provider_falls_back_to_provider_order_for_unranked_keys() {
+        // Only groq is available, and it isn't mentioned in llm_priority at all.
+        let priority = vec!["claude".to_string()];
+        let available = vec!["groq"];
+        assert_eq!(active_provider(&priority, &available), Some("groq"));
+    }
+
+    #[test]
+    fn active_provider_none_when_nothing_available() {
+        let priority = vec!["claude".to_string(), "gemini".to_string()];
+        let available: Vec<&str> = vec![];
+        assert_eq!(active_provider(&priority, &available), None);
+    }
+
+    #[test]
+    fn active_provider_skips_unavailable_higher_priority_entries() {
+        // claude is ranked first but has no key, gemini is ranked second and does, gemini
+        // should win.
+        let priority = vec!["claude".to_string(), "gemini".to_string()];
+        let available = vec!["gemini"];
+        assert_eq!(active_provider(&priority, &available), Some("gemini"));
+    }
 }

@@ -5,13 +5,14 @@
 // package manager we don't already know about, and by rate limiting so we don't spam
 // discovery attempts (and LLM calls) for the same unknown name over and over.
 
-use crate::cli::Config;
-use crate::discovery;
+use crate::{cli::Config, daemon::cursor, discovery};
 use anyhow::Result;
 use log::{debug, info};
-use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 // These are the package managers we understand natively without needing to ask an LLM
 // about them at all. OnceLock means this list gets built exactly once, lazily, the first
@@ -20,8 +21,8 @@ static BOOTSTRAPPED: OnceLock<Vec<String>> = OnceLock::new();
 
 fn bootstrapped() -> &'static Vec<String> {
     BOOTSTRAPPED.get_or_init(|| {
-        vec!["apt", "pip", "npm", "cargo", "pkg", "brew"]
-            .into_iter()
+        discovery::BOOTSTRAPPED_MANAGERS
+            .iter()
             .map(|s| s.to_string())
             .collect()
     })
@@ -34,19 +35,22 @@ fn bootstrapped() -> &'static Vec<String> {
 static RATE_LIMITER: std::sync::Mutex<Option<HashMap<String, Instant>>> =
     std::sync::Mutex::new(None);
 
-// Lazily initializes the HashMap inside the Mutex on first use. I could have used a
-// OnceLock<Mutex<HashMap<...>>> pattern instead, honestly, but this reads a little more
-// plainly to me: check if it's None, and if so, set it up.
-fn init_rate_limiter() {
-    let mut g = RATE_LIMITER.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-}
-
+// Every .lock() call in this file recovers from a poisoned mutex via
+// unwrap_or_else(|poisoned| poisoned.into_inner()) rather than unwrapping it straight into
+// a panic. Poisoning only means some other thread panicked while holding the lock at some
+// point, not that this HashMap's data is unsafe to keep using, and the worst case of
+// recovering anyway is a slightly-off rate-limit decision, not a crash. Letting a panic
+// here cascade into taking down the whole daemon over what's just a rate limiter would be a
+// much worse outcome than that.
+//
+// Both functions below self-initialize the HashMap via get_or_insert_with rather than
+// requiring some separate init call to have run first, so there's no implicit "you must
+// call this before that" ordering for anyone calling into this module to get right.
 fn should_discover(name: &str, limit_secs: u64) -> bool {
-    let mut g = RATE_LIMITER.lock().unwrap();
-    let map = g.as_mut().unwrap();
+    let mut g = RATE_LIMITER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let map = g.get_or_insert_with(HashMap::new);
     match map.get(name) {
         None => true,
         Some(&last) => last.elapsed() >= Duration::from_secs(limit_secs),
@@ -54,10 +58,11 @@ fn should_discover(name: &str, limit_secs: u64) -> bool {
 }
 
 fn record_attempt(name: &str) {
-    let mut g = RATE_LIMITER.lock().unwrap();
-    if let Some(map) = g.as_mut() {
-        map.insert(name.to_string(), Instant::now());
-    }
+    let mut g = RATE_LIMITER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    g.get_or_insert_with(HashMap::new)
+        .insert(name.to_string(), Instant::now());
 }
 
 // Called once per poll tick from daemon/mod.rs, but only if discovery_enabled is set.
@@ -67,8 +72,6 @@ fn record_attempt(name: &str) {
 // command, and if the program name isn't something we already know, kick off discovery for
 // it in the background.
 pub async fn check_unknown_commands(config: &Config) -> Result<()> {
-    init_rate_limiter();
-
     let learned = discovery::cache::load_learned_managers().unwrap_or_default();
     let known: std::collections::HashSet<String> = bootstrapped()
         .iter()
@@ -76,10 +79,10 @@ pub async fn check_unknown_commands(config: &Config) -> Result<()> {
         .cloned()
         .collect();
 
-    // Read recent shell history to look for unknown package-manager patterns
+    // Read recent shell history to look for unknown package-manager patterns.
+    // Each history file below gets its own dynamically-named cursor further down in the
+    // loop (see cursor_name), so there's no need to precompute fixed paths here.
     let data_dir = Config::data_dir()?;
-    let zsh_cursor = data_dir.join(".zsh_history.cursor");
-    let bash_cursor = data_dir.join(".bash_history.cursor");
 
     for history_path in &[
         crate::cli::home_dir().join(".zsh_history"),
@@ -88,10 +91,13 @@ pub async fn check_unknown_commands(config: &Config) -> Result<()> {
         if !history_path.exists() {
             continue;
         }
-        // Each shell's history file gets its own cursor file tracking how many lines we've
-        // already scanned for discovery purposes. This is a separate cursor from whatever
-        // shell.rs uses for ingesting commands generally, discovery only cares about "have I
-        // looked for unknown managers in this line before."
+        // Each shell's history file gets its own cursor file tracking how far we've already
+        // scanned for discovery purposes. This is a separate cursor from whatever shell.rs
+        // uses for ingesting commands generally, discovery only cares about "have I looked
+        // for unknown managers in this part of the file before." Same shared byte-offset
+        // cursor shell.rs and packages.rs use though, rather than a separate line-counting
+        // scheme that had to reread the whole file from scratch on every tick just to skip
+        // past lines it had already seen.
         let cursor_name = format!(
             "{}.discovery_cursor",
             history_path
@@ -101,34 +107,32 @@ pub async fn check_unknown_commands(config: &Config) -> Result<()> {
         );
         let cursor_path = data_dir.join(cursor_name);
 
-        let cursor = read_cursor(&cursor_path).unwrap_or(0);
-        let content = std::fs::read_to_string(history_path).unwrap_or_default();
-        let lines: Vec<&str> = content.lines().collect();
-        let total = lines.len();
+        let byte_offset = cursor::read_cursor(&cursor_path).await;
+        let (content, new_offset) = cursor::read_new_bytes(history_path, byte_offset).await?;
 
-        for line in &lines[cursor..] {
+        for line in content.lines() {
             if let Some(candidate) = looks_like_package_manager(line) {
-                if !known.contains(&candidate) {
-                    if should_discover(&candidate, config.discovery_rate_limit_seconds) {
-                        info!("Discovered unknown manager in history: {}", candidate);
-                        record_attempt(&candidate);
-                        // Discovery runs as a detached spawned task rather than being
-                        // awaited inline, because it involves a web search plus an LLM
-                        // call, both slow, and we don't want to block the poll loop (and
-                        // therefore delay shell/package/git polling) while we wait on that.
-                        tokio::spawn({
-                            let name = candidate.clone();
-                            async move {
-                                if let Err(e) = discovery::discover_manager(&name).await {
-                                    debug!("Discovery failed for {}: {}", name, e);
-                                }
+                if !known.contains(&candidate)
+                    && should_discover(&candidate, config.discovery_rate_limit_seconds)
+                {
+                    info!("Discovered unknown manager in history: {}", candidate);
+                    record_attempt(&candidate);
+                    // Discovery runs as a detached spawned task rather than being
+                    // awaited inline, because it involves a web search plus an LLM
+                    // call, both slow, and we don't want to block the poll loop (and
+                    // therefore delay shell/package/git polling) while we wait on that.
+                    tokio::spawn({
+                        let name = candidate.clone();
+                        async move {
+                            if let Err(e) = discovery::discover_manager(&name).await {
+                                debug!("Discovery failed for {}: {}", name, e);
                             }
-                        });
-                    }
+                        }
+                    });
                 }
             }
         }
-        let _ = write_cursor(&cursor_path, total);
+        cursor::write_cursor(&cursor_path, new_offset).await?;
     }
 
     Ok(())
@@ -166,19 +170,3 @@ fn looks_like_package_manager(line: &str) -> Option<String> {
 // Cursor files just hold a plain integer, "how many lines of this history file have I
 // already scanned." Reading one that doesn't exist or doesn't parse just gets treated as
 // "start from the beginning" via unwrap_or(0) at the call site.
-fn read_cursor(path: &std::path::Path) -> Option<usize> {
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-fn write_cursor(path: &std::path::Path, pos: usize) -> Result<()> {
-    std::fs::write(path, pos.to_string())?;
-    Ok(())
-}
-
-// A thin pass-through used by the CLI's --learn flag (cli/managers.rs) to force discovery
-// for a specific manager name on demand, bypassing the rate limiter and history scanning
-// entirely since the user is explicitly asking for it.
-pub async fn trigger_discovery(name: &str) -> Result<()> {
-    discovery::discover_manager(name).await?;
-    Ok(())
-}

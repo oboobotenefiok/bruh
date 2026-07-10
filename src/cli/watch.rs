@@ -4,18 +4,30 @@
 // "have I seen this error before, and how did I fix it." This is meant to catch the exact
 // moment you'd otherwise start googling an error you've already solved once.
 
-use crate::cli::output::{bold, dim, orange, print_watch_memory};
-use crate::cognee::recall;
+use crate::{
+    cli::{
+        output::{bold, dim, exit_badge, print_watch_memory},
+        Config,
+    },
+    cognee::recall,
+    daemon::shell::{exclusion_patterns, is_excluded},
+};
 use anyhow::Result;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 pub async fn run(cmd_args: &[String]) -> Result<()> {
     if cmd_args.is_empty() {
         anyhow::bail!("Usage: bruh watch <command> [args...]");
     }
 
-    let (program, rest) = cmd_args.split_first().expect("checked above");
+    // split_first() only returns None for an empty slice, and the early return just above
+    // guarantees cmd_args is non-empty by the time we get here, so this can't actually fail.
+    let (program, rest) = cmd_args
+        .split_first()
+        .expect("cmd_args is non-empty, just checked by the is_empty() guard above");
 
     // Run the command, capturing stderr but passing stdout through.
     // stdout inherits the terminal directly so the wrapped command's normal output still
@@ -60,11 +72,7 @@ pub async fn run(cmd_args: &[String]) -> Result<()> {
 
     // Non-zero exit, query Cognee for error history
     let exit_code = status.code().unwrap_or(1);
-    println!(
-        "\n{} exited with code {}",
-        bold(program),
-        orange(&exit_code.to_string())
-    );
+    println!("\n{} exited {}", bold(program), exit_badge(exit_code));
     println!();
 
     // Build query from the error output (first meaningful error line)
@@ -88,6 +96,22 @@ pub async fn run(cmd_args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    // The exact same exclusion patterns that keep secrets out of the passive shell-history
+    // poller (daemon::shell::is_excluded) get applied here too, before this text ever leaves
+    // the machine as a recall() query. A failed authenticated curl, a `cat .env`, a stack
+    // trace with a connection string, none of that should get a free pass just because it
+    // came from watch's stderr capture instead of shell history.
+    if let Ok(config) = Config::load() {
+        let patterns = exclusion_patterns(&config);
+        if is_excluded(&error_line, patterns) {
+            println!(
+                "  {} Skipping memory lookup, this error output matched an exclusion pattern.",
+                dim("→")
+            );
+            return Ok(());
+        }
+    }
+
     print!("  {} Checking memory for similar errors… ", dim("→"));
     std::io::stdout().flush()?;
 
@@ -107,9 +131,13 @@ pub async fn run(cmd_args: &[String]) -> Result<()> {
                 print_watch_memory("Prior fix found", &text);
             }
         }
-        Err(_) => {
-            // Fail silently, watch is still useful even without memory lookup
-            println!("skipped (daemon not running?)");
+        Err(e) => {
+            // recall() is a direct HTTP call from this CLI process, it has nothing to do
+            // with whether the background daemon is running, so a message that blames "the
+            // daemon" here would point troubleshooting at the wrong thing. CogneeClient's
+            // own errors are already specific (missing key, unreachable, auth failure), so
+            // showing the real one is strictly more useful than guessing.
+            println!("skipped ({})", e);
         }
     }
 

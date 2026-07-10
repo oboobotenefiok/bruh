@@ -4,8 +4,10 @@
 // purpose is standing between the user and cognee::forget with a confirmation prompt,
 // unless they've explicitly passed --force to skip it (handy for scripting or CI cleanup).
 
-use crate::cli::output::{bold, green, orange};
-use crate::cognee::forget;
+use crate::{
+    cli::output::{bold, green, orange},
+    cognee::forget,
+};
 use anyhow::Result;
 use std::io::{self, Write};
 
@@ -22,6 +24,26 @@ pub async fn run(before: Option<String>, session: Option<String>, force: bool) -
     println!();
     if let Some(ref b) = before {
         println!("  Will forget all events before: {}", bold(b));
+        if session.is_none() {
+            // COGNEE-009's note in cognee/forget.rs still applies: `before` isn't a
+            // confirmed field in Cognee's public schema, and there's no documented
+            // date-range delete. If the server silently ignores it the way it silently
+            // ignored the wrong-cased field from COGNEE-016, this request could resolve to
+            // "everything in the dataset" rather than the date-scoped subset you asked
+            // for. Surfacing that here, right before the confirmation prompt, rather than
+            // leaving it as a comment nobody reads until something's already gone.
+            println!(
+                "  {} This filter hasn't been confirmed against Cognee's actual schema yet.",
+                orange("!")
+            );
+            println!(
+                "    If it's silently ignored server-side, this could delete more than the date range above."
+            );
+            println!(
+                "    Pairing this with {} scopes the request further and is the safer option.",
+                bold("--session <id>")
+            );
+        }
     }
     if let Some(ref s) = session {
         println!("  Will forget session: {}", bold(s));

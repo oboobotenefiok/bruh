@@ -17,3 +17,18 @@ mod groq;
 pub use claude::ClaudeBackend;
 pub use gemini::GeminiBackend;
 pub use groq::GroqBackend;
+
+use std::sync::OnceLock;
+
+static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+// cognee/mod.rs made this exact fix already (see COGNEE-013 there): building a fresh
+// reqwest::Client on every call means a fresh connection pool and a fresh TLS handshake
+// every time, which is a real cost on a mobile connection. Discovery calls are rare enough
+// (rate-limited, and usually one-shot per unknown manager) that this matters far less here
+// than it did for cognee's every-30-seconds flush, but there's no reason to pay the cost at
+// all when a single shared client works just as well and keeps this consistent with how the
+// rest of the codebase already talks to the network.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    SHARED_CLIENT.get_or_init(reqwest::Client::new)
+}

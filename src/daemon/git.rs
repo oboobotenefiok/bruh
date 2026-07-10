@@ -8,8 +8,10 @@
 // Unix socket for instant delivery, a drop-file as a cross-platform fallback, and a raw
 // `git log` poll as the ultimate safety net that works even if nothing else does.
 
-use crate::cli::Config;
-use crate::events::{Event, GitCommitEvent};
+use crate::{
+    cli::Config,
+    events::{Event, GitCommitEvent},
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use log::{debug, error, info};
@@ -98,20 +100,34 @@ async fn poll_drop_file_loop() {
 
 async fn poll_drop_file_once() -> Result<()> {
     let path = Config::git_events_path()?;
-    if !path.exists() {
+
+    // GIT-004: this used to be read_to_string() then write(path, "") as two separate
+    // operations. If the post-commit hook's append landed in the narrow window between
+    // those two calls, that commit's line would get silently wiped by the truncate, since
+    // it was written after the read but destroyed before it could ever be read back. An
+    // atomic rename claims the whole file in one step instead of two: whatever's at `path`
+    // the instant the rename happens becomes ours to process, and the hook is free to
+    // create a brand new file at the original path immediately afterward (its `mkdir -p`
+    // recreates the parent, and >> just starts a fresh file if none exists), with no shared
+    // window where both sides are touching the same file's content at once.
+    //
+    // This mostly matters for correctness on principle rather than in practice: even if
+    // this race were somehow hit, the git-log poll fallback a bit further down in this file
+    // is a completely independent path that would pick up the same commit within 60
+    // seconds regardless, that's the whole point of having three delivery paths.
+    let processing_path = path.with_extension("ndjson.processing");
+    if tokio::fs::rename(&path, &processing_path).await.is_err() {
+        // Nothing to claim, either the file didn't exist (nothing written since last poll)
+        // or another poll tick already claimed it a moment ago. Either way, no work to do.
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&path)?;
+    let content = tokio::fs::read_to_string(&processing_path).await?;
+    let _ = tokio::fs::remove_file(&processing_path).await;
+
     if content.trim().is_empty() {
         return Ok(());
     }
-
-    // Truncate immediately to avoid double-processing
-    // We clear the file right after reading it, before we've even finished processing the
-    // events inside, so that if a new commit gets appended while we're mid-processing we
-    // won't accidentally read and process the same line twice on the next tick.
-    std::fs::write(&path, "")?;
 
     for line in content.lines() {
         let line = line.trim();
@@ -144,20 +160,33 @@ async fn poll_git_log_loop() {
 
 async fn poll_git_log_once() -> Result<()> {
     let data_dir = Config::data_dir()?;
-    std::fs::create_dir_all(&data_dir)?;
     let seen_path = data_dir.join("git_seen_hashes.json");
 
     // We keep a persisted set of commit hashes we've already turned into events, so
-    // restarting the daemon doesn't cause us to re-ingest the same commits again.
-    let mut seen: std::collections::HashSet<String> = if seen_path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&seen_path)?).unwrap_or_default()
-    } else {
-        std::collections::HashSet::new()
-    };
+    // restarting the daemon doesn't cause us to re-ingest the same commits again. Reading
+    // this is synchronous std::fs work, bundled into one spawn_blocking closure alongside
+    // creating the data dir, same reasoning as everywhere else in the daemon: don't block
+    // an async worker thread on disk I/O when tokio's blocking pool exists for exactly this.
+    let read_seen_path = seen_path.clone();
+    let mut seen: std::collections::HashSet<String> =
+        tokio::task::spawn_blocking(move || -> Result<std::collections::HashSet<String>> {
+            std::fs::create_dir_all(&data_dir)?;
+            if read_seen_path.exists() {
+                Ok(
+                    serde_json::from_str(&std::fs::read_to_string(&read_seen_path)?)
+                        .unwrap_or_default(),
+                )
+            } else {
+                Ok(std::collections::HashSet::new())
+            }
+        })
+        .await
+        .context("seen-hashes read task panicked")??;
 
-    let out = std::process::Command::new("git")
+    let out = tokio::process::Command::new("git")
         .args(["log", "--format=%H|%s", "-20"])
-        .output();
+        .output()
+        .await;
     let output = match out {
         Ok(o) if o.status.success() => o,
         // If we're not in a git repo, or git isn't installed, or anything else goes wrong,
@@ -165,7 +194,7 @@ async fn poll_git_log_once() -> Result<()> {
         _ => return Ok(()),
     };
 
-    let branch = current_branch();
+    let branch = current_branch().await;
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let mut parts = line.splitn(2, '|');
         let (hash, msg) = match (parts.next(), parts.next()) {
@@ -181,17 +210,22 @@ async fn poll_git_log_once() -> Result<()> {
             hash: hash.to_string(),
             message: msg.to_string(),
             branch: branch.clone(),
-            files_changed: changed_files(hash),
+            files_changed: changed_files(hash).await,
             session_id: None,
             working_directory: std::env::current_dir()
                 .ok()
                 .map(|p| p.to_string_lossy().to_string()),
-            diff_summary: diff_summary(hash),
+            diff_summary: diff_summary(hash).await,
         });
         send_event(event).await;
         seen.insert(hash.to_string());
     }
-    std::fs::write(&seen_path, serde_json::to_string(&seen)?)?;
+
+    let write_seen_path = seen_path.clone();
+    let serialized = serde_json::to_string(&seen)?;
+    tokio::task::spawn_blocking(move || std::fs::write(&write_seen_path, serialized))
+        .await
+        .context("seen-hashes write task panicked")??;
     Ok(())
 }
 
@@ -234,10 +268,18 @@ async fn send_event(event: Event) {
 
 // Shells out to git rather than parsing .git/HEAD ourselves, less code and it handles
 // detached HEAD and other edge cases correctly for free.
-fn current_branch() -> String {
-    std::process::Command::new("git")
+//
+// tokio::process::Command rather than std::process::Command: this runs inside the daemon's
+// async event loop, and spawning a child process plus waiting for it to exit is exactly the
+// kind of thing that can take a noticeable moment, especially on the slower storage some of
+// this project's target devices have. Using tokio's own async-native process API means that
+// wait happens without parking one of the runtime's limited worker threads for the duration,
+// so the shutdown-signal check and other pollers stay responsive while git runs.
+async fn current_branch() -> String {
+    tokio::process::Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -247,10 +289,11 @@ fn current_branch() -> String {
 // GIT-003: grabs just the last line of `git show --stat`, which is the "N files changed,
 // M insertions(+), K deletions(-)" summary line git prints. That one line is plenty for
 // recall() to answer "what did that commit touch" without us needing the full diff.
-fn diff_summary(hash: &str) -> Option<String> {
-    let out = std::process::Command::new("git")
+async fn diff_summary(hash: &str) -> Option<String> {
+    let out = tokio::process::Command::new("git")
         .args(["show", "--stat", "--format=", hash])
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())?;
     String::from_utf8_lossy(&out.stdout)
@@ -261,10 +304,11 @@ fn diff_summary(hash: &str) -> Option<String> {
 
 // Full list of files touched by a commit, used alongside diff_summary so recall() can
 // answer more specific questions like "did I touch main.rs in that commit."
-fn changed_files(hash: &str) -> Vec<String> {
-    std::process::Command::new("git")
+async fn changed_files(hash: &str) -> Vec<String> {
+    tokio::process::Command::new("git")
         .args(["diff-tree", "--no-commit-id", "-r", "--name-only", hash])
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())
         .map(|o| {
