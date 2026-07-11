@@ -48,6 +48,16 @@ static SHARED_CLIENT: OnceLock<CogneeClient> = OnceLock::new();
 /// that finishes in 2s doesn't wait around, this only bounds the worst case.
 const REQUEST_TIMEOUT_SECS: u64 = 120;
 
+// COGNEE-022: this used to be the only timeout, one 120s ceiling covering the whole
+// request. That's the right budget for a slow-but-working GRAPH_COMPLETION call, but it
+// meant a genuinely unreachable host (bad DNS, no route, a dead network on a background
+// Termux process Android has throttled) also took the full 120 seconds to fail, every
+// single time, on every single flush tick. A separate, much shorter timeout just for
+// establishing the TCP+TLS connection lets "can't even reach the host" fail in seconds
+// instead of minutes, while a request that DOES connect still gets the full 120s to
+// actually respond. Two different failure modes, two different budgets.
+const CONNECT_TIMEOUT_SECS: u64 = 15;
+
 // We write custom functions for the CogneeClient struct
 impl CogneeClient {
     // This creates a new instance of it. It accepts the api_key and api url while attempting to build the cliemt from the builder with a check of 30 seconds.
@@ -56,6 +66,7 @@ impl CogneeClient {
             // We'll talk more abou this line
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+                .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
                 // COGNEE-013b: unwrap_or_default() used to silently fall back to a
                 // bare reqwest::Client::default() with NO timeout at all if .build()
                 // ever failed, meaning a request could hang forever with nothing

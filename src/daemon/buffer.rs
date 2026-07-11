@@ -304,7 +304,9 @@ pub async fn flush_buffered_events() -> Result<()> {
             // retrying the full batch next window is simpler and, given
             // should_retry()'s backoff, doesn't cost extra requests. It's
             // strictly fewer than the old per-line approach even in the worst case.
-            error!("Buffer flush failed: {}. Will retry after backoff.", e);
+            // {:#} shows the full cause chain, see the matching comment in
+            // daemon/mod.rs's do_flush() for why this matters.
+            error!("Buffer flush failed: {:#}. Will retry after backoff.", e);
             record_failure();
         }
     }

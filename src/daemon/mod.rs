@@ -279,7 +279,17 @@ async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option
             buffer::record_success();
         }
         Err(e) => {
-            error!("Flush failed: {}. Buffering.", e);
+            // {:#} is anyhow's alternate Display: it prints the full cause chain
+            // ("top message: cause: cause: cause") on one line instead of just the
+            // outermost context message. The old {} only ever showed "Network error
+            // reaching Cognee at <url>", the same text for a DNS failure, a refused
+            // connection, or a timeout, with the actual underlying reqwest error (the
+            // part that would actually tell you which of those it was) silently
+            // dropped. reqwest's own error Display text says things like "operation
+            // timed out" or "dns error" or "tcp connect error", exactly the detail
+            // needed to tell "the network is down" apart from "the host doesn't
+            // exist" apart from "it's just slow right now".
+            error!("Flush failed: {:#}. Buffering.", e);
             let _ = buffer::store_events(queue).await;
             queue.clear();
             *status = "failed".into();
