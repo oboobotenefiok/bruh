@@ -4,7 +4,7 @@
 > ...because your terminal shouldn't have amnesia.
 
 
-**Given an unknown package manager, can we infer enough semantics to interact with it? **
+**Given an unknown package manager, can we infer enough semantics to interact with it?**
 
 **Developer context is casual, not just semantic.**
 
