@@ -4,7 +4,9 @@
 > ...because your terminal shouldn't have amnesia.
 
 
-Given an unknown package manager, can we infer enough semantics to interact with it?
+**Given an unknown package manager, can we infer enough semantics to interact with it? **
+
+**Developer context is casual, not just semantic.**
 
 bruh is a background daemon + CLI that ingests your shell history, package installs, git commits, and errors into [Cognee](https://github.com/topoteretes/cognee)'s hybrid graph-vector memory layer, then lets you query all of it in natural language, from any terminal session, forever.
 
@@ -49,7 +51,7 @@ $ bruh "what did I do to fix that linker error"
 
 Going through github, most tools that use Cognee treat it as a vector database to embed text and find similar text. **bruh does not do this.**
 
-Developer context is **causal**, not just semantic. When you ask "why did I install openssl?", you do not want the document most similar to the word "openssl". You want the causal chain:
+When you ask "why did I install openssl?", you do not want the document most similar to the word "openssl". You want the causal chain:
 
 ![Illustration for a flow](src/vault/flow_1.jpg)
 
