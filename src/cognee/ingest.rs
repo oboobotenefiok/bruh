@@ -7,7 +7,8 @@
 
 use super::CogneeClient;
 use crate::events::Event;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use log::debug;
 
 const CHUNK_SIZE: usize = 500;
 
@@ -42,7 +43,18 @@ pub async fn remember(events: Vec<Event>) -> Result<()> {
     // (and reloading Config from disk) on every remember() call.
     let client = CogneeClient::shared()?;
 
-    for chunk in events.chunks(CHUNK_SIZE) {
+    let chunks: Vec<&[Event]> = events.chunks(CHUNK_SIZE).collect();
+    let total_chunks = chunks.len();
+    if total_chunks > 1 {
+        debug!(
+            "remember(): sending {} events across {} chunks of up to {}",
+            events.len(),
+            total_chunks,
+            CHUNK_SIZE
+        );
+    }
+
+    for (i, chunk) in chunks.into_iter().enumerate() {
         // Serialize events as structured text that Cognee's graph builder can process.
         let text_blocks: Vec<String> = chunk.iter().map(event_to_text).collect();
 
@@ -72,7 +84,26 @@ pub async fn remember(events: Vec<Event>) -> Result<()> {
                     form
                 }
             })
-            .await?;
+            .await
+            // BUFFER-006: without this context, a chunk failure just surfaces as one
+            // generic error for the whole call, no way to tell from the log which
+            // chunk it was or how many had already gone through. On a big replay
+            // (the offline buffer can hold thousands of events) that ambiguity is
+            // exactly the kind of thing that leads to guessing instead of reading it
+            // straight off the log.
+            .with_context(|| {
+                format!(
+                    "chunk {}/{} failed ({} events in this chunk, {} sent successfully before it)",
+                    i + 1,
+                    total_chunks,
+                    chunk.len(),
+                    i * CHUNK_SIZE
+                )
+            })?;
+
+        if total_chunks > 1 {
+            debug!("remember(): chunk {}/{} sent", i + 1, total_chunks);
+        }
     }
     Ok(())
 }
@@ -122,3 +153,4 @@ fn event_to_text(event: &Event) -> String {
         ),
     }
 }
+
