@@ -60,7 +60,7 @@ const KNOWN_CMDS: &[&str] = &[
 // correct for them, not a sign of misrouting.
 const FLAGS_FOR_BARE_CMD: &[(&str, &[&str])] = &[
     ("init", &["--force"]),
-    ("daemon", &["--status"]),
+    ("daemon", &["--status", "--flush-now"]),
     ("stats", &[]),
     ("providers", &[]),
     ("explain", &[]),
@@ -211,6 +211,9 @@ async fn run() -> Result<()> {
                 // This function will literally just tell us if the daemon is actively working or not then close the program(return).
                 return cli::status::run().map_err(Into::into);
             }
+            if has_flag(&args, "--flush-now") {
+                return cli::status::force_flush().map_err(Into::into);
+            }
             // Without the flag, it sets up the daemon.
             info!("Starting bruh daemon…");
             daemon::run().await?;
@@ -343,6 +346,7 @@ fn print_help() {
     row("init", "Set up bruh (API keys, git hook, autostart)");
     row("daemon", "Start background daemon");
     row("daemon --status", "Show daemon health");
+    row("daemon --flush-now", "Force a flush and reset backoff state");
     row("query <text> [--raw] [--interactive]", "Query memory");
     row("explain", "Session handoff brief for current directory");
     row(

@@ -1,0 +1,76 @@
+--- src/daemon/mod.rs
++++ src/daemon/mod.rs
+@@ -16,6 +16,7 @@
+ // pub(crate) rather than private: cli::watch reuses exclusion_patterns()/is_excluded() from
+ // here so error text captured by `bruh watch` gets the exact same secret-filtering as the
+ // passive shell-history poller, one implementation, not two that could drift apart.
++use crate::daemon::buffer::get_backoff_seconds;
+ pub(crate) mod shell;
+
+ use crate::{cli::Config, cognee::remember, events::Event};
+@@ -111,6 +112,10 @@
+     let mut poll_timer = time::interval(poll_dur);
+     let mut flush_timer = time::interval(flush_dur);
+
++    // BUFFER-004: check for force flush signal file on startup
++    if let Err(e) = check_force_flush_signal(&config.data_dir()?).await {
++        error!("Failed to check force flush signal: {}", e);
++    }
+
+     // Git watching runs as its own spawned task rather than inside the main select! loop,
+     // because git commits are event-driven (they happen when they happen, not on a poll
+@@ -171,6 +176,12 @@
+             }
+
+             _ = flush_timer.tick() => {
++                // BUFFER-004: check for force flush signal before flush
++                if let Err(e) = check_force_flush_signal(&config.data_dir()?).await {
++                    error!("Failed to check force flush signal: {}", e);
++                    // Continue with flush anyway
++                }
++                
+                 if !event_queue.is_empty() {
+                     do_flush(&mut event_queue, &mut last_flush_status, &mut last_flush_time).await;
+                 }
+@@ -214,6 +225,32 @@
+     }
+ }
+
++// BUFFER-004: check for a force flush signal file and reset backoff if present
++async fn check_force_flush_signal(data_dir: &std::path::Path) -> Result<()> {
++    let signal_path = data_dir.join("flush_now");
++    if !signal_path.exists() {
++        return Ok(());
++    }
++    
++    info!("Force flush signal detected, resetting backoff state.");
++    
++    // Read the timestamp to log when the signal was sent
++    if let Ok(content) = tokio::fs::read_to_string(&signal_path).await {
++        info!("Force flush signal sent at: {}", content);
++    }
++    
++    // Reset the backoff state
++    buffer::record_success();
++    
++    // Remove the signal file
++    if let Err(e) = tokio::fs::remove_file(&signal_path).await {
++        warn!("Failed to remove force flush signal file: {}", e);
++    }
++    
++    info!("Backoff reset successfully. Flush will be attempted.");
++    Ok(())
++}
++
+ async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option<DateTime<Utc>>) {
+     // CORE-005: do_flush() used to attempt a network call on every single tick
+     // regardless of how recently Cognee had failed, while buffer.rs separately
+@@ -299,6 +336,8 @@
+             "managers_learned": learned,
+             // Written fresh on every single call to write_health, which fires once per
+             // flush tick. `bruh daemon --status` compares this against the current time
++            // BUFFER-004: include backoff seconds for status reporting
++            "backoff_seconds": get_backoff_seconds(),
+             // to tell a live daemon apart from a stale health.json left behind by a hard
+             // kill (SIGKILL, an OOM kill, a crash), none of which give cleanup_sockets()
+             // a chance to run and remove the file. Without this, a dead daemon's last

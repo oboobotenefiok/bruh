@@ -1,4 +1,5 @@
 //! CORE-003: bruh daemon --status, reads the health file written by the daemon.
+//! CLI-NEW-001: bruh daemon --flush-now, forces a flush and resets backoff.
 // This is deliberately a read-only, file-based status check rather than actually talking
 // to the running daemon process (no IPC, no socket round trip). The daemon writes a fresh
 // health.json every flush tick (see write_health() in daemon/mod.rs), so this just reads
@@ -19,6 +20,29 @@ use chrono::{DateTime, Utc};
 // Multiplying by 3 gives it enough slack to ride out one or two slow/failed flush cycles
 // without crying wolf on a daemon that's actually fine.
 const STALE_MULTIPLIER: u64 = 3;
+
+/// CLI-NEW-001: force a flush by sending a signal file to the daemon.
+/// This resets the backoff state and tells the daemon to attempt a flush on its next tick.
+pub fn force_flush() -> Result<()> {
+    let data_dir = Config::data_dir()?;
+    let signal_path = data_dir.join("flush_now");
+    
+    // Create the directory if it doesn't exist
+    if let Some(parent) = signal_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    
+    // Write the signal file with the current timestamp
+    let timestamp = Utc::now().to_rfc3339();
+    std::fs::write(&signal_path, timestamp)?;
+    
+    println!();
+    println!("  {} Force flush signal sent to daemon.", green("✓"));
+    println!("  {} Check status with: {}", dim("→"), bold("bruh daemon --status"));
+    println!();
+    
+    Ok(())
+}
 
 pub fn run() -> Result<()> {
     let health_path = Config::health_file_path()?;
@@ -88,6 +112,11 @@ pub fn run() -> Result<()> {
             dim("│"),
             orange("Last update looks old, the daemon may have stopped responding.")
         );
+        println!(
+            "  {}  {}",
+            dim("│"),
+            orange("Try: bruh daemon --flush-now  or  restart the daemon")
+        );
     }
 
     if let Some(checked_at) = v["as_of"]
@@ -119,6 +148,15 @@ pub fn run() -> Result<()> {
             n.to_string()
         };
         println!("  {}  Buffered (offline):{}", dim("│"), label);
+        
+        // Show recommendation if buffer is getting large
+        if n > 100 {
+            println!(
+                "  {}  {}",
+                dim("│"),
+                orange("Large buffer detected. Try: bruh daemon --flush-now")
+            );
+        }
     }
 
     if let Some(ts) = v["last_flush_time"]
@@ -139,6 +177,35 @@ pub fn run() -> Result<()> {
             orange(st)
         };
         println!("  {}  Flush status:      {}", dim("│"), formatted);
+        
+        // Show recommendation for failed flushes
+        if st == "failed" {
+            println!(
+                "  {}  {}",
+                dim("│"),
+                orange("Check your Cognee API key with: bruh config get cognee_api_key")
+            );
+            println!(
+                "  {}  {}",
+                dim("│"),
+                orange("Or try: bruh daemon --flush-now")
+            );
+        }
+    }
+
+    if let Some(backoff_secs) = v["backoff_seconds"].as_u64() {
+        if backoff_secs > 0 {
+            println!(
+                "  {}  Backoff:           {} seconds remaining",
+                dim("│"),
+                backoff_secs
+            );
+            println!(
+                "  {}  {}",
+                dim("│"),
+                orange("Flushes are paused. Try: bruh daemon --flush-now")
+            );
+        }
     }
 
     if let Some(n) = v["managers_known"].as_u64() {

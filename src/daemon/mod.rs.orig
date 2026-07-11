@@ -16,6 +16,7 @@ mod packages;
 // here so error text captured by `bruh watch` gets the exact same secret-filtering as the
 // passive shell-history poller, one implementation, not two that could drift apart.
 pub(crate) mod shell;
+
 use crate::{cli::Config, cognee::remember, events::Event};
 use crate::daemon::buffer::get_backoff_seconds;
 use anyhow::Result;
@@ -203,12 +204,7 @@ pub async fn run() -> Result<()> {
 
             _ = flush_timer.tick() => {
                 // Check for force flush signal before flushing
-                // This resets backoff and triggers a flush attempt
-                if let Ok(data_dir) = crate::cli::Config::data_dir() {
-                    if let Err(e) = check_force_flush_signal(&data_dir).await {
-                        error!("Force flush signal check failed: {}", e);
-                    }
-                }
+                let _ = check_force_flush_signal(&data_dir).await;
                 
                 if !event_queue.is_empty() {
                     do_flush(&mut event_queue, &mut last_flush_status, &mut last_flush_time).await;
@@ -390,7 +386,7 @@ fn stamp_session(ev: &mut Event, sid: &str) {
 }
 
 // BUFFER-004: check for a force flush signal file and reset backoff if present
-pub(crate) async fn check_force_flush_signal(data_dir: &std::path::Path) -> Result<()> {
+async fn check_force_flush_signal(data_dir: &std::path::Path) -> Result<()> {
     let signal_path = data_dir.join("flush_now");
     if !signal_path.exists() {
         return Ok(());
