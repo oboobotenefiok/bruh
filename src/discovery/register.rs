@@ -27,7 +27,7 @@ pub async fn store_profile(profile: &PackageManagerProfile) -> Result<StoreOutco
         Err(_) => return Ok(StoreOutcome::NotConfigured),
     };
 
-    // We structure it as a multipart form. The /remember endpoint expects multipart/form-data,
+    // We structure it as a multipart form. Just like add/, the /remember endpoint expects multipart/form-data,
     // not JSON. The datasetName field tells Cognee which dataset to store this in, using the
     // same DATASET_NAME constant that every other Cognee operation (ingest, improve, query,
     // forget) already uses to keep everything consistent.
