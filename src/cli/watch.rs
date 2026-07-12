@@ -154,3 +154,4 @@ fn extract_text(v: &serde_json::Value) -> String {
     }
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
+

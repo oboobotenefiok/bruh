@@ -170,3 +170,4 @@ fn looks_like_package_manager(line: &str) -> Option<String> {
 // Cursor files just hold a plain integer, "how many lines of this history file have I
 // already scanned." Reading one that doesn't exist or doesn't parse just gets treated as
 // "start from the beginning" via unwrap_or(0) at the call site.
+

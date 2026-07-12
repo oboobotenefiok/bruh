@@ -182,3 +182,4 @@ pub fn command_hash(cmd: &str) -> String {
     }
     format!("{:016x}", h)
 }
+

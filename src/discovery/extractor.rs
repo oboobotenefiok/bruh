@@ -265,3 +265,4 @@ mod tests {
         assert!(build_profile("pnpm", "no braces here", "gemini").is_err());
     }
 }
+

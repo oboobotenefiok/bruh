@@ -12,6 +12,7 @@
 //! new" reads from here instead of reinventing it with a different (worse) approach.
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Reads the byte offset saved at `cursor_path`, or 0 if there isn't one yet, or its
@@ -60,6 +61,53 @@ pub async fn read_new_bytes(path: &Path, cursor: u64) -> Result<(String, u64)> {
     .await?
 }
 
+/// BUFFER-007: cursor state for the two-file (primary + backlog) buffer queue in
+/// daemon/buffer.rs. This is a different shape from the plain byte-offset files above
+/// (shell.rs's `.cursor` files, packages.rs's dpkg log cursor), those only ever need to
+/// track one offset into one file, so a bare number on disk is enough. The buffer queue
+/// needs to track two offsets (one per file) together, plus the file length each was saved
+/// at, so a restart can tell "the file is shorter than last time, someone truncated or
+/// rotated it out from under us" apart from "everything's fine, just hasn't grown since our
+/// last read", the same distinction read_new_bytes() above makes for a single file. Bundling
+/// all four fields into one JSON file (rather than four separate small files) also means one
+/// read and one write per pop/ack/nack instead of four, and no risk of the two offsets ever
+/// getting persisted out of sync with each other if a write is interrupted partway through.
+pub const BUFFER_CURSOR_FILE: &str = "cursor.json";
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+pub struct BufferCursors {
+    /// Byte offset already consumed from the primary buffer (buffer.ndjson).
+    pub main_offset: u64,
+    /// Byte offset already consumed from the backlog buffer (buffer.backlog.ndjson).
+    pub backlog_offset: u64,
+    /// Primary buffer's length as of the last time this cursor was saved, used to detect
+    /// the file having shrunk out from under us since then.
+    pub main_len: u64,
+    /// Backlog buffer's length as of the last time this cursor was saved, same purpose.
+    pub backlog_len: u64,
+}
+
+/// Loads the persisted buffer cursors, or a fresh all-zero BufferCursors if the file is
+/// missing or doesn't parse. Same "corrupt or missing local state just means start over"
+/// philosophy as read_cursor() above, a lost cursor here means re-reading buffered events
+/// that may have already been sent, not losing any, so it's the safe direction to fail in.
+pub async fn load_buffer_cursors(path: &Path) -> BufferCursors {
+    match tokio::fs::read_to_string(path).await {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => BufferCursors::default(),
+    }
+}
+
+/// Persists the buffer cursors so the next flush tick (or the daemon after a restart)
+/// resumes reading exactly where it left off in both files.
+pub async fn save_buffer_cursors(path: &Path, cursors: &BufferCursors) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(path, serde_json::to_string_pretty(cursors)?).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +152,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn buffer_cursors_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(BUFFER_CURSOR_FILE);
+        let cursors = BufferCursors {
+            main_offset: 100,
+            backlog_offset: 50,
+            main_len: 200,
+            backlog_len: 75,
+        };
+        save_buffer_cursors(&p, &cursors).await.unwrap();
+        let loaded = load_buffer_cursors(&p).await;
+        assert_eq!(loaded.main_offset, 100);
+        assert_eq!(loaded.backlog_offset, 50);
+        assert_eq!(loaded.main_len, 200);
+        assert_eq!(loaded.backlog_len, 75);
+    }
+
+    #[tokio::test]
+    async fn missing_buffer_cursors_default_to_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("does_not_exist.json");
+        let loaded = load_buffer_cursors(&p).await;
+        assert_eq!(loaded.main_offset, 0);
+        assert_eq!(loaded.backlog_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn corrupt_buffer_cursors_default_to_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("garbage.json");
+        tokio::fs::write(&p, "not json").await.unwrap();
+        let loaded = load_buffer_cursors(&p).await;
+        assert_eq!(loaded.main_offset, 0);
+    }
+
+    #[tokio::test]
     async fn read_new_bytes_resets_when_file_shrinks() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("log.txt");
@@ -117,3 +201,4 @@ mod tests {
         assert_eq!(content, "short\n");
     }
 }
+

@@ -22,6 +22,10 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use log::{debug, error, info, warn};
 use serde_json::json;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::time::{self, Duration};
 
 // If more than 30 minutes pass with no activity, I treat whatever comes next as a brand new
@@ -42,6 +46,15 @@ const QUEUE_FORCE_FLUSH: usize = 500;
 // finished before we ask for another one, but short enough that `bruh explain`/`bruh
 // stats` still feel like they're looking at recent activity.
 const MIN_IMPROVE_INTERVAL_SECS: u64 = 300;
+
+// LOG-001: how often the daemon logs its "still healthy, here's what happened" summary at
+// info level. Per-flush "Flushing N events" logging (every batch_flush_interval_seconds,
+// so every few minutes) was demoted to debug! specifically because it added up to constant
+// terminal noise for a person just leaving the daemon running in the background, most of
+// those lines carry no new information tick to tick. An hourly rollup is a middle ground:
+// still gives an operator watching `RUST_LOG=info` output a periodic "yes, I'm alive and
+// here's what I did" signal, without scrolling the terminal every few minutes to say it.
+const HOUR_SUMMARY_INTERVAL_SECS: u64 = 60 * 60;
 
 pub async fn run() -> Result<()> {
     info!("bruh daemon starting");
@@ -64,6 +77,15 @@ pub async fn run() -> Result<()> {
     // display it anywhere. None means "never tried yet", so the very first successful
     // flush is free to trigger a graph-build immediately.
     let mut last_improve_time: Option<std::time::Instant> = None;
+    // LOG-001: hourly summary state. hour_flushed_events counts everything actually sent
+    // to Cognee (live flushes plus drained buffer/backlog events) since the last summary
+    // line, and cognify_succeeded_this_hour is set from inside the detached improve() spawn
+    // below, an Arc<AtomicBool> because that spawn runs on its own task and needs a way to
+    // report back into state the main loop owns, a plain bool captured by move wouldn't be
+    // visible here once the spawned task takes ownership of its own copy.
+    let mut hour_start = std::time::Instant::now();
+    let mut hour_flushed_events: u64 = 0;
+    let cognify_succeeded_this_hour = Arc::new(AtomicBool::new(false));
 
     // Two independent timers on two independent cadences. Polling (checking for new shell
     // commands, package installs, etc) happens more often than flushing (actually sending a
@@ -197,7 +219,9 @@ pub async fn run() -> Result<()> {
                 // POL-006: force flush if queue is large
                 if event_queue.len() >= QUEUE_FORCE_FLUSH {
                     warn!("Queue at {}. Force-flushing.", event_queue.len());
-                    do_flush(&mut event_queue, &mut last_flush_status, &mut last_flush_time).await;
+                    hour_flushed_events += do_flush(
+                        &mut event_queue, &mut last_flush_status, &mut last_flush_time
+                    ).await;
                 }
             }
 
@@ -211,14 +235,15 @@ pub async fn run() -> Result<()> {
                 }
                 
                 if !event_queue.is_empty() {
-                    do_flush(&mut event_queue, &mut last_flush_status, &mut last_flush_time).await;
+                    hour_flushed_events += do_flush(
+                        &mut event_queue, &mut last_flush_status, &mut last_flush_time
+                    ).await;
                 }
-                // Every flush tick is also a good moment to try replaying anything sitting
-                // in the offline buffer from an earlier Cognee outage, piggybacking this on
-                // the existing timer instead of running a third separate timer for it.
-                if let Err(e) = buffer::flush_buffered_events().await {
-                    error!("Buffer replay: {}", e);
-                }
+                // BUFFER-007: every flush tick is also a good moment to drain whatever's
+                // sitting in the offline buffer/backlog from an earlier Cognee outage,
+                // piggybacking this on the existing timer instead of running a third
+                // separate timer for it.
+                hour_flushed_events += drain_buffer().await;
 
                 // COGNEE-020: only bother asking for a graph-build if the last flush
                 // actually sent something new (status == "success"), there's no point
@@ -235,9 +260,18 @@ pub async fn run() -> Result<()> {
                         .unwrap_or(true);
                     if ready {
                         last_improve_time = Some(std::time::Instant::now());
-                        tokio::spawn(async {
-                            if let Err(e) = crate::cognee::improve(true).await {
-                                debug!("Background improve trigger failed: {}", e);
+                        // LOG-001: cloning the Arc (not the bool inside it) so the spawned
+                        // task can report success back into state the main loop still owns
+                        // after this closure moves its own copy of the handle away.
+                        let cognify_flag = cognify_succeeded_this_hour.clone();
+                        tokio::spawn(async move {
+                            match crate::cognee::improve(true).await {
+                                Ok((succeeded, _)) => {
+                                    if succeeded {
+                                        cognify_flag.store(true, Ordering::Relaxed);
+                                    }
+                                }
+                                Err(e) => debug!("Background improve trigger failed: {}", e),
                             }
                         });
                     }
@@ -245,12 +279,82 @@ pub async fn run() -> Result<()> {
 
                 write_health(start.elapsed().as_secs(), event_queue.len(),
                     &last_flush_status, last_flush_time).await;
+
+                // LOG-001: once an hour, roll up what would otherwise be scattered debug!
+                // lines into one info!-level summary, so `RUST_LOG=info` (the daemon's
+                // default) still gives an operator a periodic sign of life without the
+                // per-flush scroll.
+                if hour_start.elapsed().as_secs() >= HOUR_SUMMARY_INTERVAL_SECS {
+                    let cognify_ok = cognify_succeeded_this_hour.swap(false, Ordering::Relaxed);
+                    info!(
+                        "Hourly summary: {} events flushed, graph enrichment {}.",
+                        hour_flushed_events,
+                        if cognify_ok { "succeeded at least once" } else { "did not succeed" }
+                    );
+                    hour_flushed_events = 0;
+                    hour_start = std::time::Instant::now();
+                }
             }
         }
     }
 }
 
-async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option<DateTime<Utc>>) {
+/// BUFFER-007: pops up to POP_LIMIT events off the offline buffer (backlog first, then the
+/// primary buffer), attempts to send them, and acks or nacks the batch depending on the
+/// result. Returns how many events were successfully sent, for the caller's hourly summary
+/// counter. Shares buffer::should_retry()'s circuit breaker with do_flush() so a live flush
+/// and a buffer drain never hammer Cognee independently during the same outage.
+async fn drain_buffer() -> u64 {
+    if !buffer::should_retry() {
+        debug!("Cognee backoff active — skipping buffer drain this tick.");
+        return 0;
+    }
+
+    let batch = match buffer::pop_events().await {
+        Ok(batch) => batch,
+        Err(e) => {
+            error!("Buffer pop failed: {:#}", e);
+            return 0;
+        }
+    };
+
+    if batch.is_empty() {
+        if batch.has_only_corrupt_lines() {
+            // Nothing worth sending, but the cursor still needs to move past the garbage
+            // lines we skipped, or we'd re-read (and re-warn about) them every single tick.
+            if let Err(e) = buffer::ack_events(batch).await {
+                error!("Failed to commit cursor past corrupt buffer lines: {:#}", e);
+            }
+        }
+        return 0;
+    }
+
+    let count = batch.events.len() as u64;
+    match remember(batch.events.clone()).await {
+        Ok(_) => {
+            debug!("Drained {} events from the offline buffer.", count);
+            buffer::record_success();
+            if let Err(e) = buffer::ack_events(batch).await {
+                error!("Failed to commit buffer drain cursor: {:#}", e);
+            }
+            count
+        }
+        Err(e) => {
+            // {:#} shows the full cause chain, see the matching comment in do_flush() for
+            // why that matters here.
+            error!("Buffer drain failed: {:#}. Requeueing to backlog.", e);
+            buffer::record_failure();
+            if let Err(e) = buffer::nack_events(batch).await {
+                error!("Failed to requeue failed buffer events to backlog: {:#}", e);
+            }
+            0
+        }
+    }
+}
+
+/// Flushes the in-memory event queue to Cognee, returning how many events were
+/// successfully sent (0 on backoff or failure), for the caller's hourly summary counter.
+async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option<DateTime<Utc>>) -> u64 {
     // CORE-005: do_flush() used to attempt a network call on every single tick
     // regardless of how recently Cognee had failed, while buffer.rs separately
     // tracked its own backoff for buffer replay, two uncoordinated retry loops
@@ -267,16 +371,24 @@ async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option
         let _ = buffer::store_events(queue).await;
         queue.clear();
         *status = "backoff".into();
-        return;
+        return 0;
     }
 
-    info!("Flushing {} events", queue.len());
+    // LOG-001: demoted from info! to debug!. This used to fire every flush tick (every
+    // batch_flush_interval_seconds, a few minutes by default) regardless of whether
+    // anything interesting happened, which is exactly the kind of routine, unchanging
+    // line that turns a terminal into scroll noise over a long-running daemon. The hourly
+    // summary logged at the end of the flush_timer arm now carries this information at
+    // info! level instead, rolled up instead of repeated.
+    let count = queue.len();
+    debug!("Flushing {} events", count);
     match remember(queue.clone()).await {
         Ok(_) => {
             queue.clear();
             *status = "success".into();
             *time = Some(Utc::now());
             buffer::record_success();
+            count as u64
         }
         Err(e) => {
             // {:#} is anyhow's alternate Display: it prints the full cause chain
@@ -295,6 +407,7 @@ async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option
             *status = "failed".into();
             *time = Some(Utc::now());
             buffer::record_failure();
+            0
         }
     }
 }
@@ -317,10 +430,21 @@ async fn write_health(
     // thread the shutdown-signal check or another poller is trying to use at the same time.
     let flush_status = flush_status.to_string();
     let _ = tokio::task::spawn_blocking(move || {
+        // BUFFER-007: buffered_events now covers both queue files, the primary buffer
+        // (events not yet attempted) and the backlog (events that already failed once and
+        // are waiting to be retried), so `bruh daemon --status` reports the true total
+        // still sitting on disk rather than just one half of it.
+        let count_lines = |path: &std::path::Path| {
+            std::fs::read_to_string(path)
+                .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+                .unwrap_or(0)
+        };
         let buffered = Config::load()
             .ok()
-            .and_then(|c| std::fs::read_to_string(&c.offline_buffer_path).ok())
-            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+            .map(|c| {
+                let backlog = buffer::backlog_path(&c);
+                count_lines(&c.offline_buffer_path) + count_lines(&backlog)
+            })
             .unwrap_or(0);
         let learned = crate::discovery::cache::load_learned_managers()
             .map(|m| m.len())
@@ -424,3 +548,4 @@ pub(crate) async fn check_force_flush_signal(data_dir: &std::path::Path) -> Resu
     info!("Backoff reset successfully. Flush will be attempted.");
     Ok(())
 }
+

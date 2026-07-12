@@ -22,7 +22,10 @@ pub async fn run() -> Result<()> {
     // so this stays blocking. The daemon's own periodic trigger (daemon/mod.rs) is the one
     // that passes true and doesn't wait around, see the COGNEE-020 note in improve.rs.
     match improve(false).await {
-        Ok(summary) => {
+        // The CLI only cares about the summary text, a person watching the terminal can
+        // already see whether this succeeded from which match arm ran, the success flag is
+        // for the daemon's own hourly summary log, see the COGNEE-023 note in improve.rs.
+        Ok((_, summary)) => {
             println!("{}", green("✓"));
             println!();
             // Cognee doesn't always send back a text summary, its own response schema
@@ -58,3 +61,4 @@ pub async fn run() -> Result<()> {
     print_footer();
     Ok(())
 }
+

@@ -75,3 +75,4 @@ pub fn save_learned_manager(profile: &PackageManagerProfile) -> Result<()> {
     std::fs::write(&path, serde_json::to_string_pretty(&existing)?)?;
     Ok(())
 }
+

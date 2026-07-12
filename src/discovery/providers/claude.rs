@@ -87,3 +87,4 @@ impl ExtractorBackend for ClaudeBackend {
         build_profile(manager_name, text, "claude")
     }
 }
+

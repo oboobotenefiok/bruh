@@ -4,3 +4,4 @@
 // to reach all the way into `crate::events::schema::Event`. Saves a bit of typing everywhere else.
 pub mod schema;
 pub use schema::*;
+

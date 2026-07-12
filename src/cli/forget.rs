@@ -70,3 +70,4 @@ pub async fn run(before: Option<String>, session: Option<String>, force: bool) -
     println!("  {}  Memory entries removed.", green("✓"));
     Ok(())
 }
+

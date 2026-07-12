@@ -413,3 +413,4 @@ fn write_managed_block(
 
     Ok(Some(profile.to_string_lossy().to_string()))
 }
+

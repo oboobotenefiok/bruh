@@ -101,3 +101,4 @@ impl ExtractorBackend for GeminiBackend {
         build_profile(manager_name, text, "gemini")
     }
 }
+

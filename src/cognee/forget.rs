@@ -45,3 +45,4 @@ pub async fn forget(before: Option<String>, session: Option<String>) -> Result<(
     client.post("forget", body).await?;
     Ok(())
 }
+

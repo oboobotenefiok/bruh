@@ -176,3 +176,4 @@ fn test_corrupt_ndjson_skipped() {
     assert_eq!(events.len(), 2);
     assert_eq!(corrupt, 1);
 }
+

@@ -510,3 +510,4 @@ mod tests {
         assert!(!FLAGS_FOR_BARE_CMD.iter().any(|(cmd, _)| *cmd == "watch"));
     }
 }
+

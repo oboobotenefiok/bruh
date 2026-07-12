@@ -14,9 +14,11 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
-use log::debug;
+use log::{debug, warn};
 use regex::{Regex, RegexBuilder};
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
@@ -54,6 +56,107 @@ pub(crate) fn is_excluded(command: &str, patterns: &[Regex]) -> bool {
 // pattern set rather than paying to recompile the same regexes a second time.
 pub(crate) fn exclusion_patterns(config: &Config) -> &'static [Regex] {
     EXCLUSION_PATTERNS.get_or_init(|| build_exclusion_patterns(&config.excluded_commands))
+}
+
+// ── SHELL-006: surviving history-file truncation without duplicate re-ingestion ────────
+// HISTFILESIZE trimming, `history -c`, log rotation, or someone just editing the file by
+// hand all shrink a history file in place. When that happens, the byte offset our cursor
+// was pointing at no longer means anything (cursor::read_new_bytes() detects this itself
+// and resets to 0), which means the NEXT poll hands back the file's entire current
+// content as if none of it had ever been seen, even though most of those lines were
+// already ingested and sent to Cognee in a previous run. Left alone, that's a duplicate
+// flood on every restart that happens to land after a trim.
+//
+// Byte offsets alone can't fix this: once the file has shrunk, there's no offset that
+// distinguishes "already-sent content that survived the trim" from "genuinely new
+// content" without looking at the actual bytes. So this is where the existing
+// command_hash() dedup pattern (already used for git commits via git_seen_hashes.json)
+// gets adapted for shell history: a small persisted set of hashes for lines we've already
+// turned into events, checked before emitting anything, so re-reading the same surviving
+// tail after a trim is a no-op instead of a flood of duplicate events.
+
+// Capped rather than "remember every command hash forever", for two reasons. First, disk
+// use: an unbounded set would grow for as long as the daemon runs, forever. Second, and
+// more importantly, correctness: command_hash() only fingerprints the command TEXT
+// (normalised whitespace), it doesn't include a timestamp, because plain bash/PowerShell
+// history has no per-entry timestamp to include (see parse_plain_history_str(), every line
+// gets stamped with Utc::now() at parse time, which differs on every re-parse and so can't
+// be part of a stable fingerprint). That means two genuinely separate runs of the exact
+// same command hash identically. An unbounded "seen forever" set would silently stop
+// remembering a command entirely the first time it repeats, which would badly degrade
+// recall() for the common case of re-running the same build/test command many times a day.
+// Capping the set and evicting the oldest hash once it's full means a repeated command is
+// only suppressed while it's still within the last SEEN_HASHES_CAP commands, comfortably
+// enough to absorb a truncation-triggered re-read of the surviving tail, small enough that
+// a command re-run hours or days later is treated as new again.
+const SEEN_HASHES_CAP: usize = 5000;
+
+/// Per-source metadata (file size and mtime as of the last successful read), persisted
+/// alongside the existing byte-offset `.cursor` file. This exists purely for explicit,
+/// loggable truncation detection, cursor::read_new_bytes() already self-heals a stale
+/// offset on its own by resetting to 0, this just lets us notice and log when that
+/// happened instead of it being a silent behavior change.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+struct SourceMeta {
+    file_size: u64,
+    #[serde(default)]
+    mtime_secs: i64,
+}
+
+async fn read_source_meta(path: &Path) -> SourceMeta {
+    match tokio::fs::read_to_string(path).await {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => SourceMeta::default(),
+    }
+}
+
+async fn write_source_meta(path: &Path, meta: &SourceMeta) -> Result<()> {
+    tokio::fs::write(path, serde_json::to_string(meta)?).await?;
+    Ok(())
+}
+
+/// Stat's the history file's current size and mtime, and returns true if it's shrunk since
+/// `previous` was recorded, the signal that the file was trimmed, rotated, or replaced
+/// since we last read it.
+async fn file_shrank_since(path: &Path, previous: &SourceMeta) -> (bool, SourceMeta) {
+    let current = match tokio::fs::metadata(path).await {
+        Ok(m) => SourceMeta {
+            file_size: m.len(),
+            mtime_secs: m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        },
+        Err(_) => SourceMeta::default(),
+    };
+    (current.file_size < previous.file_size, current)
+}
+
+/// Loads the bounded, ordered set of already-ingested command hashes for one history
+/// source. A missing or corrupt file just means "nothing remembered yet", same
+/// fail-safe-open philosophy as every other piece of persisted local state in this daemon.
+async fn read_seen_hashes(path: &Path) -> VecDeque<String> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => VecDeque::new(),
+    }
+}
+
+async fn write_seen_hashes(path: &Path, seen: &VecDeque<String>) -> Result<()> {
+    tokio::fs::write(path, serde_json::to_string(seen)?).await?;
+    Ok(())
+}
+
+/// Records `hash` as seen, evicting the oldest entry first if the set is already at
+/// SEEN_HASHES_CAP. Kept as its own tiny function rather than inlined at the one call site
+/// so the eviction rule is documented and tested in exactly one place.
+fn record_seen_hash(seen: &mut VecDeque<String>, hash: String) {
+    seen.push_back(hash);
+    while seen.len() > SEEN_HASHES_CAP {
+        seen.pop_front();
+    }
 }
 
 // The main entry point called once per poll tick from daemon/mod.rs. Walks whatever shell
@@ -115,11 +218,29 @@ async fn poll_shell_history_with_home(config: &Config, home: &Path) -> Result<Ve
             .to_string();
         let cursor_path = data_dir.join(format!("{}.cursor", source_name));
         let last_dir_path = data_dir.join(format!("{}.lastdir", source_name));
+        let meta_path = data_dir.join(format!("{}.meta.json", source_name));
+        let seen_path = data_dir.join(format!("{}.seen.json", source_name));
+
+        // SHELL-006: check for truncation explicitly before reading, purely so it's
+        // logged and visible rather than a silent internal reset. read_new_bytes() below
+        // will notice and self-heal the stale offset either way.
+        let prev_meta = read_source_meta(&meta_path).await;
+        let (shrank, current_meta) = file_shrank_since(history_path, &prev_meta).await;
+        if shrank {
+            warn!(
+                "{} shrank since last read ({} -> {} bytes, trimmed/rotated/edited). \
+                 Re-reading from the start of the file; already-ingested commands still \
+                 in the surviving content will be skipped via the seen-hash set rather \
+                 than re-sent to Cognee.",
+                source_name, prev_meta.file_size, current_meta.file_size
+            );
+        }
 
         let byte_offset = cursor::read_cursor(&cursor_path).await;
         let (content, new_offset) = cursor::read_new_bytes(history_path, byte_offset).await?;
         if content.is_empty() {
             cursor::write_cursor(&cursor_path, new_offset).await?;
+            write_source_meta(&meta_path, &current_meta).await?;
             continue;
         }
 
@@ -132,10 +253,15 @@ async fn poll_shell_history_with_home(config: &Config, home: &Path) -> Result<Ve
         // SHELL-005: reconstruct working directories from cd commands, picking up from
         // wherever the last poll tick left off rather than resetting to the daemon's own
         // static launch directory every time. See read_last_dir's doc comment for why that
-        // matters.
+        // matters. This intentionally runs over the FULL entry list, including anything
+        // about to be filtered out as a duplicate below, a cd command that happens to be a
+        // truncation-replay duplicate still needs to be replayed for directory tracking to
+        // stay accurate, only whether we EMIT AN EVENT for a line is affected by dedup.
         let start_dir = read_last_dir(&last_dir_path).await;
         let end_dir = reconstruct_directories(&mut entries, start_dir, home);
         write_last_dir(&last_dir_path, &end_dir).await?;
+
+        let mut seen_hashes = read_seen_hashes(&seen_path).await;
 
         for entry in &entries {
             if entry.command.is_empty() {
@@ -145,6 +271,13 @@ async fn poll_shell_history_with_home(config: &Config, home: &Path) -> Result<Ve
                 continue;
             }
 
+            let hash = command_hash(&entry.command);
+            if seen_hashes.contains(&hash) {
+                debug!("Skipping already-ingested command: {}", &entry.command);
+                continue;
+            }
+            record_seen_hash(&mut seen_hashes, hash.clone());
+
             events.push(Event::ShellCommand(ShellCommandEvent {
                 timestamp: entry.timestamp,
                 directory: entry.directory.clone(),
@@ -153,13 +286,15 @@ async fn poll_shell_history_with_home(config: &Config, home: &Path) -> Result<Ve
                 output: entry.stderr.clone(),
                 duration_ms: entry.duration_ms,
                 session_id: None,
-                command_hash: Some(command_hash(&entry.command)),
+                command_hash: Some(hash),
                 error_type: entry.stderr.as_deref().and_then(classify_error),
             }));
             debug!("Shell event: {}", &entry.command);
         }
 
+        write_seen_hashes(&seen_path, &seen_hashes).await?;
         cursor::write_cursor(&cursor_path, new_offset).await?;
+        write_source_meta(&meta_path, &current_meta).await?;
     }
 
     Ok(events)
@@ -545,6 +680,8 @@ mod tests {
     // it's supposed to.
     #[test]
     fn test_unflushed_history_produces_zero_events_until_flushed() {
+        let _guard = BASH_HISTORY_STATE_LOCK.lock().unwrap();
+        reset_bash_history_state();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().to_path_buf();
         let history_path = dir.path().join(".bash_history");
@@ -600,9 +737,165 @@ mod tests {
         );
     }
 
+    // TEST-002: poll_shell_history_with_home always resolves state files (cursor, lastdir,
+    // and now SHELL-006's meta/seen files) under the REAL Config::data_dir(), not anything
+    // scoped to the tempdir `home` a test passes in, only the history file path itself is
+    // test-scoped. That means any two tests both exercising a ".bash_history" source share
+    // the exact same on-disk state files, and cargo test runs tests in parallel by default,
+    // so without serializing them, one test's writes can interleave with another's reads
+    // and cause spurious failures that have nothing to do with either test's actual logic.
+    // A process-wide mutex around just the two tests that hit this is the minimal fix,
+    // properly parameterizing data_dir() for tests would be the more thorough fix but is a
+    // bigger, riskier change than this bug warrants.
+    static BASH_HISTORY_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Deletes any state files left over in the real data dir from a previous test run (or
+    /// a previous `cargo test` invocation entirely) for the ".bash_history" source, so each
+    /// test using it starts from a clean, known slate rather than depending on whatever
+    /// happened to be there before.
+    fn reset_bash_history_state() {
+        if let Ok(data_dir) = Config::data_dir() {
+            for suffix in [".cursor", ".lastdir", ".meta.json", ".seen.json"] {
+                let _ = std::fs::remove_file(data_dir.join(format!(".bash_history{}", suffix)));
+            }
+        }
+    }
+
     #[test]
     fn test_command_hash_normalises() {
         use crate::events::command_hash;
         assert_eq!(command_hash("cargo  build"), command_hash("cargo build"));
     }
+
+    // ── SHELL-006: truncation-safe dedup ────────────────────────────────────
+
+    #[test]
+    fn test_record_seen_hash_evicts_oldest_once_full() {
+        let mut seen = VecDeque::new();
+        for i in 0..SEEN_HASHES_CAP {
+            record_seen_hash(&mut seen, format!("hash-{}", i));
+        }
+        assert_eq!(seen.len(), SEEN_HASHES_CAP);
+        assert_eq!(seen.front().unwrap(), "hash-0");
+
+        record_seen_hash(&mut seen, "hash-new".to_string());
+        assert_eq!(
+            seen.len(),
+            SEEN_HASHES_CAP,
+            "set should stay capped, not grow unbounded"
+        );
+        assert_eq!(
+            seen.front().unwrap(),
+            "hash-1",
+            "oldest entry should have been evicted to make room"
+        );
+        assert!(seen.contains(&"hash-new".to_string()));
+    }
+
+    #[tokio::test]
+    async fn source_meta_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bash_history.meta.json");
+        let meta = SourceMeta { file_size: 500, mtime_secs: 12345 };
+        write_source_meta(&p, &meta).await.unwrap();
+        let loaded = read_source_meta(&p).await;
+        assert_eq!(loaded.file_size, 500);
+        assert_eq!(loaded.mtime_secs, 12345);
+    }
+
+    #[tokio::test]
+    async fn missing_source_meta_defaults_to_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("does_not_exist.json");
+        let loaded = read_source_meta(&p).await;
+        assert_eq!(loaded.file_size, 0);
+    }
+
+    #[tokio::test]
+    async fn file_shrank_since_detects_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(".bash_history");
+        std::fs::write(&p, "a\nb\nc\n").unwrap();
+
+        let previous = SourceMeta { file_size: 100, mtime_secs: 0 };
+        let (shrank, current) = file_shrank_since(&p, &previous).await;
+        assert!(shrank, "current 6-byte file is smaller than the recorded 100 bytes");
+        assert_eq!(current.file_size, 6);
+    }
+
+    #[tokio::test]
+    async fn file_shrank_since_false_when_grown_or_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join(".bash_history");
+        std::fs::write(&p, "a\nb\nc\n").unwrap();
+
+        let previous = SourceMeta { file_size: 3, mtime_secs: 0 };
+        let (shrank, _) = file_shrank_since(&p, &previous).await;
+        assert!(!shrank, "file grew, that's not a truncation");
+    }
+
+    // This is the actual bug report reproduced end to end: the daemon ingests some
+    // commands, then (simulating a restart landing right after HISTFILESIZE trimmed the
+    // history file) the file is replaced with a SHORTER file whose content is a subset of
+    // what was already ingested. Before SHELL-006, read_new_bytes()'s own shrink-reset
+    // meant this replayed as brand new content and every line got re-emitted as a
+    // duplicate event. With the seen-hash set in place, the exact same lines should now
+    // produce zero new events, only genuinely new content after the trim should surface.
+    #[test]
+    fn test_truncation_does_not_duplicate_already_ingested_commands() {
+        let _guard = BASH_HISTORY_STATE_LOCK.lock().unwrap();
+        reset_bash_history_state();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let history_path = dir.path().join(".bash_history");
+
+        std::fs::write(
+            &history_path,
+            "cargo build --release\ngit status\ncargo test\n",
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let first_pass = rt
+            .block_on(poll_shell_history_with_home(&config, &home))
+            .unwrap();
+        assert_eq!(first_pass.len(), 3, "all three commands ingested the first time");
+
+        // Simulate HISTFILESIZE trimming the file down to just its last line right around
+        // a daemon restart, the exact scenario from the bug report: the surviving content
+        // ("cargo test") was already ingested above, but the file is now SHORTER than the
+        // persisted cursor offset, which is what forces read_new_bytes() to reset to 0.
+        std::fs::write(&history_path, "cargo test\n").unwrap();
+
+        let second_pass = rt
+            .block_on(poll_shell_history_with_home(&config, &home))
+            .unwrap();
+        assert_eq!(
+            second_pass.len(),
+            0,
+            "the only surviving line was already ingested, so nothing new should be emitted"
+        );
+
+        // And a genuinely new command appended after the trim should still surface
+        // normally, dedup must not swallow real new content.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&history_path)
+            .unwrap();
+        use std::io::Write;
+        writeln!(f, "cargo clippy").unwrap();
+
+        let third_pass = rt
+            .block_on(poll_shell_history_with_home(&config, &home))
+            .unwrap();
+        assert_eq!(third_pass.len(), 1, "genuinely new command after the trim should surface");
+        if let Event::ShellCommand(sc) = &third_pass[0] {
+            assert_eq!(sc.command, "cargo clippy");
+        } else {
+            panic!("expected a ShellCommand event");
+        }
+    }
 }
+

@@ -85,3 +85,4 @@ impl ExtractorBackend for GroqBackend {
         build_profile(manager_name, text, "groq")
     }
 }
+

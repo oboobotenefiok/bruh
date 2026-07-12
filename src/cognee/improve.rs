@@ -33,7 +33,20 @@ use serde_json::json;
 /// neither call site (cli/improve.rs or daemon/mod.rs) needs to change, it's just now a
 /// note to a future reader about which caller this is, rather than something we forward
 /// over the wire.
-pub async fn improve(background: bool) -> Result<Option<String>> {
+/// COGNEE-023: returns an explicit `(succeeded, summary)` pair instead of just
+/// `Result<Option<String>>`. Every failure path in this function already bails out early
+/// via `?`, so on the Ok branch `succeeded` is always `true`, the only way to get a `false`
+/// here would be a network/parse error, which is an `Err`, not an `Ok((false, _))`. That
+/// makes the bool look redundant next to the Result, and in isolation it would be. The
+/// reason to still carry it explicitly is the caller in daemon/mod.rs: it fires this off
+/// via `tokio::spawn` and needs to record "did cognify succeed this hour" into a flag a
+/// completely different part of the loop reads later for the hourly summary log. Matching
+/// on Ok/Err to derive that bool works too, but it means the success/failure logic lives in
+/// two places (Result's variant AND a match at the call site) instead of one value the
+/// caller can just read off the tuple. cli/improve.rs, the other caller, ignores the flag
+/// entirely and only cares about the summary text, which is exactly the asymmetry you'd
+/// expect: one caller needs a machine-readable status, the other just prints a message.
+pub async fn improve(background: bool) -> Result<(bool, Option<String>)> {
     // COGNEE-013: shared client, see cognee/mod.rs.
     let client = CogneeClient::shared()?;
 
@@ -68,5 +81,6 @@ pub async fn improve(background: bool) -> Result<Option<String>> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    Ok(text)
+    Ok((true, text))
 }
+

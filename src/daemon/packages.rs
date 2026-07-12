@@ -791,3 +791,4 @@ mod tests {
         assert_eq!(parse_choco_line("onlyname"), None);
     }
 }
+
