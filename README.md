@@ -6,7 +6,9 @@
 
 **Given an unknown package manager, can we infer enough semantics to interact with it?**
 
-**Developer context is casual, not just semantic.**
+** If developer context is more casual than semantic, what's the maximum amount of semantics we can recover from it?**
+
+That's where bruh comes in.
 
 bruh is a background daemon + CLI that ingests your shell history, package installs, git commits, and errors into [Cognee](https://github.com/topoteretes/cognee)'s hybrid graph-vector memory layer, then lets you query all of it in natural language, from any terminal session, forever.
 
