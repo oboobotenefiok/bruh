@@ -6,7 +6,7 @@
 
 **Given an unknown package manager, can we infer enough semantics to interact with it?**
 
-** If developer context is more casual than semantic, what's the maximum amount of semantics we can recover from it?**
+**If developer context is more casual than semantic, what's the maximum amount of semantics we can recover from it?**
 
 That's where bruh comes in.
 
