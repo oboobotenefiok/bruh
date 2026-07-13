@@ -2,10 +2,20 @@
 name = "bruh"
 version = "0.1.0"
 edition = "2021"
-authors = ["oboobotenefiok"]
-description = "Background daemon and CLI tool for persistent developer memory"
-license = "MIT"
+authors = ["Obot Obo <oboobotenefiok@gmail.com>"]
+description = "Cure Your Terminal Of Amnesia -- Background daemon and CLI tool for persistent developer memory"
+license = "MIT OR Apache-2.0 OR Unlicense"
 repository = "https://github.com/oboobotenefiok/bruh"
+documentation = "https://docs.rs/bruh"  
+homepage = "https://github.com/oboobotenefiok/bruh"
+readme = "README.md"
+keywords = ["cli", "terminal", "history", "memory", "ai", "llm", "cognee", "graph", "vector", "daemon", "shell", "productivity", "developer-tools", "context", "causal", "query", "natural-language"]
+categories = ["command-line-utilities", "development-tools"]
+
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 # Building as both a binary and a library (see src/main.rs and src/lib.rs) so the
 # integration tests in tests/ can pull in the crate's modules through the normal public API
