@@ -71,6 +71,12 @@ fn record_attempt(name: &str) {
 // history every tick), check each new line for something that looks like an install
 // command, and if the program name isn't something we already know, kick off discovery for
 // it in the background.
+/// Checks the most recent shell command against known package managers, kicking off
+/// discovery in the background for anything unrecognized.
+///
+/// # Errors
+///
+/// Returns an error if reading the shell history cursor fails.
 pub async fn check_unknown_commands(config: &Config) -> Result<()> {
     let learned = discovery::cache::load_learned_managers().unwrap_or_default();
     let known: std::collections::HashSet<String> = bootstrapped()

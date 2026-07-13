@@ -12,6 +12,7 @@ use crate::{
 use anyhow::Result;
 use std::io::Write;
 
+/// Runs `bruh improve`, triggering Cognee's graph enrichment pass with visible progress output.
 pub async fn run() -> Result<()> {
     print_header("Memory Improvement");
     println!();

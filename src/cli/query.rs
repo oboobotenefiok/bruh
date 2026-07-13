@@ -44,6 +44,7 @@ fn local_dataset_answer(query: &str) -> Option<String> {
 // query is the already-cleaned text (flags stripped, see parse_query_args in main.rs), and
 // raw controls whether we print Cognee's response as-is (JSON) or render it as a friendly
 // timeline via print_timeline.
+/// Runs `bruh <query>` / `bruh query <text>`: a one-shot recall against Cognee, in timeline or raw JSON form.
 pub async fn run(query: &str, raw: bool) -> Result<()> {
     // Meta-questions about bruh's own setup get answered here, locally, before we ever
     // touch the network. See local_dataset_answer's comment above for the full reasoning.

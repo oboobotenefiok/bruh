@@ -1,9 +1,10 @@
-// This is the shared vocabulary of the whole project. Every single thing the daemon
-// observes (a shell command, a package install, a git commit, a discovered package
-// manager) gets normalized into one of the Event variants below before it goes anywhere
-// near Cognee. Having one enum for all of this means ingest.rs, buffer.rs, and every
-// poller can all just work with `Event` without caring about the specific shape underneath
-// until they actually need to.
+/// The shared vocabulary of the whole project.
+///
+/// Every single thing the daemon observes (a shell command, a package install, a git
+/// commit, a discovered package manager) gets normalized into one of these variants before
+/// it goes anywhere near Cognee. Having one enum for all of this means ingest.rs, buffer.rs,
+/// and every poller can all just work with `Event` without caring about the specific shape
+/// underneath until they actually need to.
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,7 @@ pub enum Event {
 // and error_type gives improve() something structured to cluster on when it's looking for
 // recurring failure patterns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single observed shell command, with dedup hashing and error classification.
 pub struct ShellCommandEvent {
     pub timestamp: DateTime<Utc>,
     pub directory: String,
@@ -51,6 +53,7 @@ pub struct ShellCommandEvent {
 // trigger_command (PKG-005) is what links this install back to the shell command that
 // caused it, populated by daemon/packages.rs from the LAST_COMMAND static.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A package install/upgrade observed on a known or learned package manager.
 pub struct PackageInstallEvent {
     pub timestamp: DateTime<Utc>,
     pub manager: String,
@@ -68,6 +71,8 @@ pub struct PackageInstallEvent {
 // distinction is mostly useful for the `bruh managers` output so the user can see what was
 // built in versus what bruh taught itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Whether a package manager is one bruh knows natively, or one discovery learned on
+/// the fly.
 pub enum ManagerType {
     Bootstrapped,
     Learned,
@@ -75,6 +80,7 @@ pub enum ManagerType {
 
 /// SCHEMA-NEW-001 + GIT-003: working_directory + diff_summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single observed git commit.
 pub struct GitCommitEvent {
     pub timestamp: DateTime<Utc>,
     pub hash: String,
@@ -91,6 +97,8 @@ pub struct GitCommitEvent {
 // convention from thinking about this as a graph node in Cognee's terms, calling it that
 // explicitly helps on their end recognize what kind of thing this record represents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// A package manager's profile as figured out by the discovery pipeline: how to install,
+/// remove, and list packages with it.
 pub struct PackageManagerProfile {
     pub node_type: String,
     pub name: String,
@@ -109,6 +117,7 @@ pub struct PackageManagerProfile {
 // confidence profiles still get stored and used, but a human skimming `bruh managers` can
 // see at a glance which ones might be worth double-checking.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// How confident the LLM extractor was in a discovered [`PackageManagerProfile`].
 pub enum Confidence {
     High,
     Medium,

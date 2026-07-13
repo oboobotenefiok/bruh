@@ -4,6 +4,12 @@ use super::CogneeClient;
 use anyhow::Result;
 use serde_json::{json, Value};
 
+/// Asks Cognee a natural-language question over everything ingested into [`DATASET_NAME`](super::DATASET_NAME),
+/// returning the parsed JSON response.
+///
+/// # Errors
+///
+/// Returns an error if the request to Cognee fails.
 pub async fn recall(query: &str) -> Result<Value> {
     let client = CogneeClient::shared()?;
     // COGNEE-016: /api/v1/recall (confirmed against docs.cognee.ai/api-reference/recall/recall)

@@ -25,6 +25,12 @@ struct CacheEntry {
 // If the file doesn't exist yet (first run, nothing learned yet) we just hand back an empty
 // map instead of erroring, since "nothing learned" is a perfectly normal state, not a
 // failure.
+/// Reads the learned-managers cache and returns only the entries that haven't expired
+/// past the cache's TTL.
+///
+/// # Errors
+///
+/// Returns an error if the cache file exists but can't be parsed.
 pub fn load_learned_managers() -> Result<HashMap<String, PackageManagerProfile>> {
     let path = Config::learned_managers_path()?;
     if !path.exists() {
@@ -54,6 +60,11 @@ pub fn load_learned_managers() -> Result<HashMap<String, PackageManagerProfile>>
 // insert/replace the one entry, then write the whole thing back out. Not the most efficient
 // approach for a huge cache, but realistically nobody's going to have thousands of package
 // managers cached, so a full read-modify-write is simple and fine here.
+/// Inserts or overwrites one learned profile in the on-disk cache.
+///
+/// # Errors
+///
+/// Returns an error if the cache directory or file can't be written.
 pub fn save_learned_manager(profile: &PackageManagerProfile) -> Result<()> {
     let path = Config::learned_managers_path()?;
     if let Some(p) = path.parent() {

@@ -2,16 +2,22 @@
 name = "bruh"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 authors = ["Obot Obo <oboobotenefiok@gmail.com>"]
 description = "Cure Your Terminal Of Amnesia -- Background daemon and CLI tool for persistent developer memory"
 license = "MIT OR Apache-2.0 OR Unlicense"
 repository = "https://github.com/oboobotenefiok/bruh"
-documentation = "https://docs.rs/bruh"  
+documentation = "https://docs.rs/bruh"
 homepage = "https://github.com/oboobotenefiok/bruh"
 readme = "README.md"
-keywords = ["cli", "terminal", "history", "memory", "ai", "llm", "cognee", "graph", "vector", "daemon", "shell", "productivity", "developer-tools", "context", "causal", "query", "natural-language"]
+# crates.io caps a package at 5 keywords (and 20 characters each), so this is the
+# short-list of what people would actually search for, not the full topic tag cloud.
+keywords = ["cli", "daemon", "terminal", "memory", "ai"]
 categories = ["command-line-utilities", "development-tools"]
-
+# The packaged crate should ship source and docs, not the screenshots/diagrams used in the
+# README. Those live under docs/images and are referenced by GitHub-relative links, they
+# don't need to travel inside the .crate file that cargo install/cargo add download.
+exclude = ["docs/images/*", "deep.sh", "deep.rs"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -28,10 +34,13 @@ path = "src/main.rs"
 name = "bruh"
 path = "src/lib.rs"
 
-# Every dependency here is pinned to an exact version (the leading "=") rather than a
-# semver range. For a hackathon build I wanted "it built and worked on my machine" to mean
-# "it builds and works the exact same way for anyone who clones the repo," not something
-# that could quietly shift under me if crates.io serves a newer patch release mid-judging.
+# Dependencies use caret ranges (Cargo's default) rather than exact "=" pins. I used exact pins strictly for the hackathon but now we have to move to best practice. Exact pins
+# make sense for a binary you build and run yourself, but this crate is also a library:
+# an exact pin here would forbid Cargo from unifying our version of, say, tokio or serde
+# with whatever compatible version a downstream consumer's other dependencies need,
+# breaking dependency resolution for anyone who depends on this crate alongside another.
+# The committed Cargo.lock is what still gives *us* a reproducible `bruh` binary build;
+# consumers of the library are free to resolve within the compatible range.
 [dependencies]
 # Async runtime for the daemon's event loop. We pull in the specific feature flags we
 # actually use rather than the "full" bundle, keeps compile times down. macros for
@@ -41,31 +50,32 @@ path = "src/lib.rs"
 # (tokio::fs / tokio::process instead of std::fs / std::process::Command, so a slow disk
 # read or a slow `pip list` can't block one of the runtime's worker threads and stall
 # everything else scheduled on it, the git listener and shutdown signal check included).
-tokio = { version = "=1.35.1", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "signal", "fs", "process"] }
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread", "io-util", "net", "time", "signal", "fs", "process"] }
 # HTTP client for talking to Cognee and the LLM provider APIs. rustls-tls instead of the
 # default openssl-based TLS backend so we don't need a system OpenSSL install, one less
 # thing that can go wrong on a machine we don't control. "blocking" is included just for
 # init.rs's synchronous API-key validation check, everything else uses the async client.
-reqwest = { version = "=0.11.22", features = ["json", "multipart", "rustls-tls", "blocking"], default-features = false }
-serde = { version = "=1.0.193", features = ["derive"] }
-serde_json = "=1.0.108"
+reqwest = { version = "0.11", features = ["json", "multipart", "rustls-tls", "blocking"], default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 # Timestamps everywhere in the event schema, with the "serde" feature so DateTime<Utc>
 # fields serialize cleanly without us having to write custom (de)serializers.
-chrono = { version = "=0.4.31", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 # Lets ExtractorBackend (discovery/extractor.rs) be an async trait with dyn dispatch, which
 # stable Rust doesn't support natively yet.
-async-trait = "=0.1.74"
-anyhow = "=1.0.75"
-log = "=0.4.20"
-env_logger = "=0.10.1"
+async-trait = "0.1"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.10"
 # Used for SHELL-003's command exclusion patterns and a couple of small parsing spots.
-regex = "=1.10.2"
-url = "=2.4.1"
-# Currently unused directly but kept as a transitive-pin, some versions of our other deps
-# expect indexmap in the dependency tree and this keeps the lockfile stable across builds.
-indexmap = "=2.2.6"
+regex = "1.10"
+url = "2.4"
+# Currently unused directly but kept as a direct dependency, some versions of our other
+# deps expect indexmap in the tree and this keeps the lockfile stable across builds.
+indexmap = "2.2"
 
 [dev-dependencies]
 # Only used by tests, gives us real temp files/dirs for the cursor and buffer round-trip
 # tests instead of having to fake a filesystem.
-tempfile = "=3.8.1"
+tempfile = "3.8"
+

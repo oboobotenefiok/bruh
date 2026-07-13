@@ -1,3 +1,9 @@
+//! The thin HTTP client for Cognee's hybrid graph-vector memory API.
+//!
+//! `mod.rs` here is just the entry point: it declares the four operation submodules
+//! (forget, improve, ingest, query) and re-exports their public functions, plus owns
+//! [`CogneeClient`] itself, the shared, timeout-tuned `reqwest` client every operation
+//! goes through.
 //! This is the entry point for the cognee layer. As usual we first begin with the children declaration.
 
 mod forget;
@@ -10,7 +16,9 @@ pub use improve::improve;
 pub use ingest::{remember, remember_single};
 pub use query::recall;
 
-// Every single thing bruh sends to or asks Cognee for (add, cognify, recall, forget) needs
+/// The single Cognee dataset every `bruh` operation reads from and writes to.
+///
+/// Every single thing bruh sends to or asks Cognee for (add, cognify, recall, forget) needs
 // to point at the exact same dataset, otherwise you get precisely the situation that
 // prompted this constant to exist: one part of the code writing into "bruh_activity" while
 // another part quietly falls back to whatever Cognee's own default happens to be, and now
@@ -27,6 +35,11 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use std::{sync::OnceLock, time::Duration};
 
+/// A configured HTTP client for Cognee's API, holding the API key, base URL, and a
+/// connection-pooled `reqwest::Client` tuned with generous request and connect timeouts.
+///
+/// Most call sites should go through [`CogneeClient::shared`] rather than constructing
+/// their own, so the whole process reuses one connection pool.
 pub struct CogneeClient {
     client: reqwest::Client,
     api_key: String,
@@ -61,6 +74,9 @@ const CONNECT_TIMEOUT_SECS: u64 = 15;
 // We write custom functions for the CogneeClient struct
 impl CogneeClient {
     // This creates a new instance of it. It accepts the api_key and api url while attempting to build the cliemt from the builder with a check of 30 seconds.
+    /// Builds a new client from an explicit API key and URL.
+    ///
+    /// Prefer [`CogneeClient::shared`] or [`CogneeClient::from_config`] in most call sites.
     pub fn new(api_key: String, api_url: String) -> Self {
         Self {
             // We'll talk more abou this line
@@ -99,6 +115,11 @@ impl CogneeClient {
             .expect("OnceLock has a value now regardless of whether set() above won the race"))
     }
 
+    /// Builds a client from the on-disk/environment config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config can't be loaded or no Cognee API key is set.
     pub fn from_config() -> Result<Self> {
         // We load values from the configuration file via the cli::Config::load function. Context is a method for error or more info for anyhow. This will return as a Struct we can access.
         let config = crate::cli::Config::load().context("Failed to load config")?;

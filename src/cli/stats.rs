@@ -23,6 +23,7 @@ const STATS_FIELDS: &[(&str, &str)] = &[
     ("Longest session", "longest_session"),
 ];
 
+/// Runs `bruh stats`, asking Cognee to summarize ingested activity into a productivity snapshot.
 pub async fn run() -> Result<()> {
     // Earlier this just described the fields we wanted in prose ("Include: total commands,
     // packages installed by manager, ...") and hoped the model would happen to answer back

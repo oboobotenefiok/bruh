@@ -44,6 +44,7 @@ pub fn force_flush() -> Result<()> {
     Ok(())
 }
 
+/// Runs `bruh daemon --status`, reading and pretty-printing the daemon's last-written health file.
 pub fn run() -> Result<()> {
     let health_path = Config::health_file_path()?;
 

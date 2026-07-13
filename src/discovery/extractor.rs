@@ -19,6 +19,8 @@ use log::{info, warn};
 // answered, is_available() lets us skip providers whose API key isn't set without wasting a
 // network round trip, and extract() is the actual work.
 #[async_trait]
+/// The contract every LLM discovery backend implements: identify itself, report whether
+/// it's configured, and extract a package-manager profile from search snippets.
 pub trait ExtractorBackend: Send + Sync {
     fn name(&self) -> &'static str;
     fn is_available(&self) -> bool;
@@ -33,6 +35,7 @@ pub trait ExtractorBackend: Send + Sync {
 // concrete types (GeminiBackend, GroqBackend, ClaudeBackend) but we want to treat them
 // uniformly in a Vec. This is dynamic dispatch, a small runtime cost but nothing that
 // matters here since we're doing network calls anyway.
+/// An ordered cascade of LLM backends tried in priority order until one succeeds.
 pub struct ProviderCascade {
     backends: Vec<Box<dyn ExtractorBackend>>,
 }
@@ -48,6 +51,8 @@ impl ProviderCascade {
     // back to PROVIDER_ORDER for any providers they didn't explicitly rank. I use a
     // HashMap here as scratch space just so I can remove() entries as I place them into the
     // ordered Vec, that way nothing gets duplicated and nothing gets dropped.
+    /// Builds the cascade in the user's configured priority order, falling back to
+    /// [`PROVIDER_ORDER`] for any providers left unranked.
     pub fn from_config(config: &Config) -> Self {
         // CONFIG-003: each backend gets its resolved key (config value first, then that
         // provider's native env var) baked in right here at construction, instead of
@@ -101,6 +106,11 @@ impl ProviderCascade {
     // just move on to the next one rather than giving up immediately. Only if every single
     // backend fails do we bail with an actionable error message telling the user which env
     // vars to set.
+    /// Tries each available backend in order, returning the first successful extraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if every configured backend fails or none are available.
     pub async fn extract(
         &self,
         manager_name: &str,
@@ -131,6 +141,12 @@ impl ProviderCascade {
 
 // This is the plain entry point the silent daemon path calls (see discovery/mod.rs). It
 // just loads the config fresh, builds a cascade from it, and runs it. Nothing fancy.
+/// Loads the config fresh and runs [`ProviderCascade::extract`] against it; the plain,
+/// non-verbose entry point the background daemon path uses.
+///
+/// # Errors
+///
+/// Returns an error if the config can't be loaded or every backend fails.
 pub async fn extract_with_cascade(
     manager_name: &str,
     snippets: &[String],
@@ -148,6 +164,12 @@ pub async fn extract_with_cascade(
 // a hit, it doesn't give me a hook to print progress per attempt, so I duplicated the loop
 // here instead. A little repetitive, I know, but it keeps both code paths simple to read
 // rather than one function trying to serve two very different UX needs.
+/// Same cascade as [`extract_with_cascade`], but prints a live per-provider status line
+/// as it goes; used by `bruh managers --learn`.
+///
+/// # Errors
+///
+/// Returns an error if every backend fails.
 pub async fn extract_with_cascade_verbose(
     manager_name: &str,
     snippets: &[String],
@@ -184,7 +206,10 @@ pub async fn extract_with_cascade_verbose(
     anyhow::bail!("All LLM providers failed for '{}'", manager_name)
 }
 
-// This used to be copy-pasted into gemini.rs, groq.rs, and claude.rs separately, identical
+/// Parses a backend's raw LLM output into a [`PackageManagerProfile`], tolerating stray
+/// prose around the JSON and falling back to sensible defaults for missing fields.
+///
+/// This used to be copy-pasted into gemini.rs, groq.rs, and claude.rs separately, identical
 // except for which provider name showed up in the error message. Comparing all three side
 // by side, there was never actually any provider-specific logic living inside this
 // function, the real per-provider differences (prompt wording, markdown-fence handling,

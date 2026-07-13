@@ -56,6 +56,12 @@ const MIN_IMPROVE_INTERVAL_SECS: u64 = 300;
 // here's what I did" signal, without scrolling the terminal every few minutes to say it.
 const HOUR_SUMMARY_INTERVAL_SECS: u64 = 60 * 60;
 
+/// Runs the daemon's main event loop: polling shell history, package managers, and git,
+/// batching results, and flushing them to Cognee on a timer until a shutdown signal arrives.
+///
+/// # Errors
+///
+/// Returns an error if the daemon fails to initialize (for example, an unreadable config).
 pub async fn run() -> Result<()> {
     info!("bruh daemon starting");
     let config = Config::load()?;
@@ -524,6 +530,8 @@ fn stamp_session(ev: &mut Event, sid: &str) {
 }
 
 // BUFFER-004: check for a force flush signal file and reset backoff if present
+/// Checks for and clears a force-flush signal file, resetting backoff so the next tick
+/// flushes immediately regardless of the current retry gate.
 pub(crate) async fn check_force_flush_signal(data_dir: &std::path::Path) -> Result<()> {
     let signal_path = data_dir.join("flush_now");
     if !signal_path.exists() {

@@ -147,6 +147,7 @@ fn init_persistent_state() {
 // a panic (see daemon::discovery's rate limiter for the same reasoning in more detail):
 // worst case a poisoned lock costs us a slightly-off backoff timer, not a crash, and a
 // crash here would take down the whole daemon over what's just retry bookkeeping.
+/// Whether the shared retry gate allows an attempt right now, based on the current backoff.
 pub(crate) fn should_retry() -> bool {
     init_persistent_state();
     
@@ -159,6 +160,7 @@ pub(crate) fn should_retry() -> bool {
     }
 }
 
+/// Resets the shared backoff to its minimum after a successful flush.
 pub(crate) fn record_success() {
     init_persistent_state();
 
@@ -195,6 +197,7 @@ pub(crate) fn record_success() {
     save_retry_state();
 }
 
+/// Doubles the shared backoff (capped) and marks the failed attempt's time.
 pub(crate) fn record_failure() {
     init_persistent_state();
     
@@ -209,6 +212,12 @@ pub(crate) fn record_failure() {
     save_retry_state();
 }
 
+/// Appends `events` to the on-disk offline buffer, trimming the oldest entries once
+/// `max_buffer_size` is exceeded.
+///
+/// # Errors
+///
+/// Returns an error if the config can't be loaded or the buffer file can't be written.
 pub async fn store_events(events: &[Event]) -> Result<()> {
     let config = Config::load()?;
     let buf_path = config.offline_buffer_path.clone();
@@ -299,6 +308,7 @@ pub struct PendingBatch {
 }
 
 impl PendingBatch {
+    /// Whether this batch has no events left to retry.
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }

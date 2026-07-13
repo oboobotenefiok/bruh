@@ -1,4 +1,20 @@
-// This is the library root. Cargo picks this up automatically because it's named lib.rs,
+//! Cure your terminal of amnesia.
+//!
+//! `bruh` is a background daemon and CLI that watches your shell history, package manager
+//! events, and git commits, then batches that activity off to [Cognee](https://www.cognee.ai/)'s
+//! hybrid graph-vector memory so you can later ask plain-language questions about what you
+//! were doing and why. Four operations sit at the center of it: remember (the daemon
+//! batching and shipping events as they happen), recall (`bruh <query>`, asking the
+//! accumulated memory a question), improve (asking Cognee to re-derive higher-level
+//! structure over what's already been ingested), and forget (pruning a session or time
+//! range back out).
+//!
+//! The [`daemon`] module owns the always-on background process, [`cli`] implements every
+//! user-facing subcommand, [`discovery`] is the self-learning layer that figures out unknown
+//! package managers on the fly, [`cognee`] is the thin client for the memory backend itself,
+//! and [`events`] defines the shared event schema all of the above serialize through.
+//!
+//! This is the library root. Cargo picks this up automatically because it's named lib.rs,
 // same way main.rs is picked up as the binary root. Having both means the project compiles
 // as a library AND a binary, and the binary just pulls in the library crate. I did this
 // mainly so tests/integration.rs (which lives outside src/) can actually reach into these

@@ -1,4 +1,4 @@
-//! CLI-007: bruh watch <command>, run a command, surface error memory on failure.
+//! CLI-007: `bruh watch <command>`, run a command, surface error memory on failure.
 // `bruh watch cargo build` is the "wrap any command" helper: run it as normal, let stdout
 // stream through live, but capture stderr, and if the command fails, immediately ask Cognee
 // "have I seen this error before, and how did I fix it." This is meant to catch the exact
@@ -18,6 +18,7 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// Runs `bruh watch <command>`, running the command live and surfacing past-error memory on failure.
 pub async fn run(cmd_args: &[String]) -> Result<()> {
     if cmd_args.is_empty() {
         anyhow::bail!("Usage: bruh watch <command> [args...]");

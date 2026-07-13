@@ -108,6 +108,7 @@ pub async fn remember(events: Vec<Event>) -> Result<()> {
     Ok(())
 }
 
+/// Convenience wrapper around [`remember`] for sending a single event.
 pub async fn remember_single(event: Event) -> Result<()> {
     remember(vec![event]).await
 }

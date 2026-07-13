@@ -13,6 +13,7 @@ use crate::{
 use anyhow::Result;
 use std::io::Write;
 
+/// Runs `bruh explain`: a plain-language session handoff brief for the current directory.
 pub async fn run() -> Result<()> {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())

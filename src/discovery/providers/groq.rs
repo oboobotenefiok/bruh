@@ -1,7 +1,8 @@
-// Second backend in the discovery cascade, tried after Gemini fails or isn't configured.
-// Groq is running Llama here, and their inference is genuinely fast, which matters because
-// this whole extraction step happens while the daemon is otherwise busy watching for events,
-// we don't want a slow LLM call to become a bottleneck.
+//! The Groq discovery backend -- second in the provider cascade, after Gemini.
+//!
+//! Groq is running Llama here, and their inference is genuinely fast, which matters
+//! because this whole extraction step happens while the daemon is otherwise busy watching
+//! for events; we don't want a slow LLM call to become a bottleneck.
 use crate::{
     discovery::extractor::{build_profile, ExtractorBackend},
     events::PackageManagerProfile,
@@ -13,6 +14,7 @@ use serde_json::Value;
 // CONFIG-003: resolved key handed in at construction time (config value first, GROQ_API_KEY
 // env var as fallback), same pattern as GeminiBackend, see gemini.rs for the longer version
 // of this comment.
+/// The Groq backend for package-manager discovery. See [`ExtractorBackend`].
 pub struct GroqBackend {
     pub api_key: Option<String>,
 }

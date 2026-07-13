@@ -11,6 +11,7 @@ use crate::{
 use anyhow::Result;
 use std::io::{self, Write};
 
+/// Runs `bruh forget`, confirming with the user before deleting anything unless `force` is set.
 pub async fn run(before: Option<String>, session: Option<String>, force: bool) -> Result<()> {
     // We require at least one of before/session, an unscoped "forget everything" felt too
     // dangerous to support as a bare default, better to make the user be explicit about

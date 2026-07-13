@@ -12,6 +12,7 @@ use crate::{
 };
 use anyhow::Result;
 
+/// Runs `bruh managers`, either listing known package managers or, with `learn`, forcing discovery for one name.
 pub async fn run(learn: Option<String>) -> Result<()> {
     if let Some(name) = learn {
         return run_learn(&name).await;

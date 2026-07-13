@@ -20,6 +20,7 @@ use std::path::PathBuf;
 // that's the modern standard env var, falling back to HOMEPATH, and if somehow neither is
 // set we fall back to a public folder rather than panicking, better a wrong-but-valid path
 // than a crash. Unix just reads $HOME the normal way.
+/// Resolves the user's home directory in a platform-aware way (Windows vs Unix env vars).
 pub fn home_dir() -> PathBuf {
     #[cfg(windows)]
     {
@@ -91,6 +92,7 @@ pub fn config_dir() -> Result<PathBuf> {
 // complete with defaults the next time you run `bruh config set` on anything.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
+/// Every tunable setting `bruh` reads, serialized to and from `config.json`.
 pub struct Config {
     pub cognee_api_key: String,
     pub cognee_api_url: String,
@@ -172,6 +174,8 @@ impl Config {
     // is saved on disk (or defaults if nothing's saved yet), then layers env var overrides
     // on top so BRUH_* vars always win, useful for one-off overrides without touching the
     // saved config file, like in CI or a quick debugging session.
+/// Loads the saved config from disk (or defaults if none exists yet), then layers any
+    /// `BRUH_*` environment variable overrides on top.
     pub fn load() -> Result<Self> {
         let mut cfg = Self::load_from_disk()?;
         cfg.apply_env_overrides();
@@ -255,6 +259,8 @@ impl Config {
         Ok(())
     }
 
+    /// Writes the current config back out to `config.json`, creating the parent
+    /// directory if needed.
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
         if let Some(p) = path.parent() {
@@ -269,15 +275,19 @@ impl Config {
     // reaching for data_dir()/config_dir() directly everywhere, keeps every consumer
     // agnostic to the exact directory layout, if I ever want to reorganize where things
     // live I only need to change it here.
+    /// Path to `config.json`.
     pub fn config_path() -> Result<PathBuf> {
         Ok(config_dir()?.join("config.json"))
     }
+    /// Path to the discovery cache file, `learned_managers.json`.
     pub fn learned_managers_path() -> Result<PathBuf> {
         Ok(config_dir()?.join("learned_managers.json"))
     }
+    /// The application's writable data directory (see the free [`data_dir`] function).
     pub fn data_dir() -> Result<PathBuf> {
         data_dir()
     }
+    /// Path to the daemon's health snapshot file, `health.json`.
     pub fn health_file_path() -> Result<PathBuf> {
         Ok(data_dir()?.join("health.json"))
     }
@@ -294,6 +304,7 @@ impl Config {
     // for example). Keeping one small function per provider instead of one generic
     // "resolve(name)" helper because the env var name differs per provider and doesn't
     // follow a pattern I can derive from the config field name.
+    /// The configured Gemini key, falling back to the `GOOGLE_AI_API_KEY` env var.
     pub fn resolved_gemini_key(&self) -> Option<String> {
         if !self.gemini_api_key.is_empty() {
             Some(self.gemini_api_key.clone())
@@ -301,6 +312,7 @@ impl Config {
             std::env::var("GOOGLE_AI_API_KEY").ok()
         }
     }
+    /// The configured Groq key, falling back to the `GROQ_API_KEY` env var.
     pub fn resolved_groq_key(&self) -> Option<String> {
         if !self.groq_api_key.is_empty() {
             Some(self.groq_api_key.clone())
@@ -308,6 +320,7 @@ impl Config {
             std::env::var("GROQ_API_KEY").ok()
         }
     }
+    /// The configured Claude key, falling back to the `ANTHROPIC_API_KEY` env var.
     pub fn resolved_claude_key(&self) -> Option<String> {
         if !self.claude_api_key.is_empty() {
             Some(self.claude_api_key.clone())
@@ -319,6 +332,7 @@ impl Config {
     // Powers `bruh config get <key>` and `bruh config list`. The API key gets masked
     // deliberately, we never want to print the actual secret to a terminal that might be
     // screen-shared or logged, "<hidden>" tells the user it's set without leaking it.
+    /// Reads a config value by key for `bruh config get`/`list`, masking secrets as `<hidden>`.
     pub fn get_value(&self, key: &str) -> Option<String> {
         match key {
             "cognee_api_key" => Some(if self.cognee_api_key.is_empty() {
@@ -369,6 +383,13 @@ impl Config {
     // bare parse error. Runs validate() at the end so a bad set can't leave the in-memory
     // config in a state that would break the daemon, the caller (cli/config_cli.rs) is
     // expected to bail out and not save if this returns an error.
+    /// Sets a config value by key for `bruh config set`, parsing `value` into the field's
+    /// real type and re-validating before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is unrecognized, `value` fails to parse for that field's
+    /// type, or the resulting config fails [`Config::validate`].
     pub fn set_value(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "cognee_api_key" => {

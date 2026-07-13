@@ -19,6 +19,7 @@ use std::{
     io::{self, Write},
 };
 
+/// Runs `bruh init`, the onboarding wizard for API keys, discovery providers, the git hook, and daemon autostart.
 pub fn run() -> Result<()> {
     run_with_force(false)
 }

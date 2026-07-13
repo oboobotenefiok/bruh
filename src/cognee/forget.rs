@@ -1,7 +1,17 @@
+//! Sends the actual `forget` request to Cognee once the CLI's confirmation prompt clears it.
+
 use super::CogneeClient;
 use anyhow::Result;
 use serde_json::json;
 
+/// Deletes memory from Cognee, scoped by `session` and/or a `before` date cutoff.
+///
+/// This is the client-side half of `bruh forget`; [`crate::cli::forget`] handles the
+/// interactive confirmation prompt before calling this.
+///
+/// # Errors
+///
+/// Returns an error if the request to Cognee fails.
 pub async fn forget(before: Option<String>, session: Option<String>) -> Result<()> {
     // COGNEE-013: shared client, see cognee/mod.rs.
     let client = CogneeClient::shared()?;

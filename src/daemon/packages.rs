@@ -29,6 +29,8 @@ use std::{
 // installed at some point."
 static LAST_COMMAND: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Records the most recently observed shell command, so a later package-manager poll can
+/// correlate an install event with the command that triggered it.
 pub fn record_last_command(cmd: &str) {
     if let Ok(mut g) = LAST_COMMAND.lock() {
         *g = Some(cmd.to_string());
@@ -113,6 +115,12 @@ async fn run_command(program: &str, args: &[&str]) -> std::io::Result<std::proce
 // whatever install events came out of each. I used a little macro here (try_poll!) just to
 // avoid repeating the same match-and-log boilerplate for every single manager, a failed
 // poll on one manager (say pip isn't installed) shouldn't stop us from checking the others.
+/// Polls every known package manager for new installs/upgrades since the last check,
+/// continuing past any single manager's failure.
+///
+/// # Errors
+///
+/// Returns an error only if every package manager poll fails.
 pub async fn poll_package_managers() -> Result<Vec<Event>> {
     let mut events = Vec::new();
     macro_rules! try_poll {

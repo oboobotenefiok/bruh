@@ -1,8 +1,9 @@
-// bruh config list / get / set, no hand-editing required by the user here.
-// This is the thin CLI-facing wrapper around the actual Config logic living in cli/config.rs.
-// Config itself doesn't know or care about terminal formatting, colors, or how the CLI
-// arguments got parsed, this file's whole job is bridging "what the user typed" to "what
-// Config's methods expect" and then printing something nice back.
+//! `bruh config list / get / set`, no hand-editing required by the user here.
+//!
+//! This is the thin CLI-facing wrapper around the actual Config logic living in cli/config.rs.
+//! Config itself doesn't know or care about terminal formatting, colors, or how the CLI
+//! arguments got parsed, this file's whole job is bridging "what the user typed" to "what
+//! Config's methods expect" and then printing something nice back.
 
 // We bring in the custom pretty printer
 use crate::cli::{
@@ -34,9 +35,16 @@ const DISPLAY_KEYS: &[&str] = &[
     "excluded_commands",
 ];
 
-// sub is the subcommand ("list", "get", or "set"), already extracted from argv in main.rs.
-// key and value are Options since "list" needs neither, "get" needs just key, and "set"
-// needs both.
+/// Handles the `bruh config <sub>` family of subcommands.
+///
+/// `sub` is the subcommand (`"list"`, `"get"`, or `"set"`), already extracted from argv in
+/// main.rs. `key` and `value` are `Option`s since `"list"` needs neither, `"get"` needs just
+/// `key`, and `"set"` needs both.
+///
+/// # Errors
+///
+/// Returns an error if the config file can't be loaded, or if `key` doesn't match a known
+/// configuration field.
 pub fn run(sub: &str, key: Option<&str>, value: Option<&str>) -> Result<()> {
     match sub {
         "list" => {

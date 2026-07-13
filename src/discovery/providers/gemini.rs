@@ -1,6 +1,8 @@
-// This is the Gemini backend for the discovery cascade. It's the first one we try because
-// Google's free tier on gemini-1.5-flash is generous and the model is fast enough that it
-// doesn't hold up the daemon for long when it hits an unknown package manager.
+//! The Gemini discovery backend -- first in the provider cascade.
+//!
+//! It's the first one we try because Google's free tier on gemini-1.5-flash is generous
+//! and the model is fast enough that it doesn't hold up the daemon for long when it hits
+//! an unknown package manager.
 use crate::{
     discovery::extractor::{build_profile, ExtractorBackend},
     events::PackageManagerProfile,
@@ -14,6 +16,7 @@ use serde_json::Value;
 // fallback, see Config::resolved_gemini_key) and hands it to us here at construction time.
 // That's the only thing that changed, is_available()/extract() below just read the field
 // instead of calling env::var() themselves.
+/// The Gemini backend for package-manager discovery. See [`ExtractorBackend`].
 pub struct GeminiBackend {
     pub api_key: Option<String>,
 }

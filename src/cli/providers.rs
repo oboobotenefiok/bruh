@@ -27,6 +27,7 @@ fn active_provider<'a>(llm_priority: &'a [String], available: &[&'a str]) -> Opt
         .find(|id| available.contains(id))
 }
 
+/// Runs `bruh providers`, a dashboard of the LLM discovery cascade's configured and available state.
 pub async fn run() -> Result<()> {
     let config = Config::load()?;
 

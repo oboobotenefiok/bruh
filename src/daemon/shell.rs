@@ -46,6 +46,8 @@ fn build_exclusion_patterns(excluded: &[String]) -> Vec<Regex> {
 // pub(crate) rather than private: cli::watch reuses this exact same check before sending
 // captured error output to recall(), so there's one single definition of "does this text
 // look like it might contain a secret" instead of two that could quietly drift apart.
+/// Whether `command` matches one of the configured exclusion patterns (secrets, destructive
+/// commands) and should be dropped rather than remembered.
 pub(crate) fn is_excluded(command: &str, patterns: &[Regex]) -> bool {
     patterns.iter().any(|r| r.is_match(command))
 }
@@ -54,6 +56,7 @@ pub(crate) fn is_excluded(command: &str, patterns: &[Regex]) -> bool {
 // This is the same OnceLock the shell-history poller already uses, so calling this from
 // anywhere else in the crate (cli::watch, for instance) reuses the identical compiled
 // pattern set rather than paying to recompile the same regexes a second time.
+/// The compiled exclusion patterns for `config`, built once and reused across the crate.
 pub(crate) fn exclusion_patterns(config: &Config) -> &'static [Regex] {
     EXCLUSION_PATTERNS.get_or_init(|| build_exclusion_patterns(&config.excluded_commands))
 }
@@ -164,6 +167,12 @@ fn record_seen_hash(seen: &mut VecDeque<String>, hash: String) {
 // (via the byte-offset cursor, see POLISH-005 below), parses those bytes into structured
 // entries, filters out anything matching an exclusion pattern (so secrets typed as env vars
 // don't end up remembered forever), and turns what's left into events.
+/// Reads new shell-history lines since the last poll, filters out excluded commands, and
+/// converts what's left into events.
+///
+/// # Errors
+///
+/// Returns an error if the shell history file or cursor can't be read.
 pub async fn poll_shell_history(config: &Config) -> Result<Vec<Event>> {
     poll_shell_history_with_home(config, &home_dir()).await
 }

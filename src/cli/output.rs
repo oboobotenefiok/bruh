@@ -28,6 +28,8 @@ const GREEN: &str = "\x1b[32m";
 const CYAN: &str = "\x1b[36m";
 const DEEP_ORANGE: &str = "\x1b[38;5;166m";
 
+/// Whether ANSI color codes should be emitted, honoring `NO_COLOR`, `TERM=dumb`, and
+/// whether stdout is actually a terminal.
 pub fn is_color_enabled() -> bool {
     use std::io::IsTerminal;
 
@@ -52,15 +54,19 @@ fn c(code: &str, text: &str) -> String {
     }
 }
 
+/// Wraps `s` in the bold ANSI escape, or returns it unchanged if color is disabled.
 pub fn bold(s: &str) -> String {
     c(BOLD, s)
 }
+/// Wraps `s` in the dim ANSI escape, or returns it unchanged if color is disabled.
 pub fn dim(s: &str) -> String {
     c(DIM, s)
 }
+/// Wraps `s` in green, or returns it unchanged if color is disabled.
 pub fn green(s: &str) -> String {
     c(GREEN, s)
 }
+/// Wraps `s` in cyan, or returns it unchanged if color is disabled.
 pub fn cyan(s: &str) -> String {
     c(CYAN, s)
 }
@@ -68,6 +74,8 @@ pub fn cyan(s: &str) -> String {
 // to split between them (errors, warnings, disabled states, destructive confirmations, any
 // non-zero exit code). One color for "something's off" is easier to keep consistent across
 // a whole CLI than juggling where the red/yellow line falls in each file.
+/// Wraps `s` in the deep-orange "pay attention" color, or returns it unchanged if color is
+/// disabled.
 pub fn orange(s: &str) -> String {
     c(DEEP_ORANGE, s)
 }
@@ -84,21 +92,24 @@ pub fn fmt_datetime(ts: &DateTime<Utc>) -> String {
     local.format("%a %b %d · %H:%M").to_string()
 }
 
+/// Prints a dim horizontal rule used to frame CLI section headers and footers.
 pub fn print_divider() {
     println!("{}", dim(&"─".repeat(56)));
 }
 
+/// Prints the standard `bruh · <title>` banner, framed by dividers above and below.
 pub fn print_header(title: &str) {
     print_divider();
     println!("  {}  ·  {}", bold(&cyan("bruh")), bold(title));
     print_divider();
 }
 
+/// Prints the closing divider that pairs with [`print_header`].
 pub fn print_footer() {
     print_divider();
 }
 
-/// Print an exit code badge: green [0] or deep orange [N].
+/// Print an exit code badge: green \[0\] or deep orange \[N\].
 pub fn exit_badge(code: i32) -> String {
     if code == 0 {
         green(&format!("[{}]", code))

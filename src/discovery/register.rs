@@ -17,6 +17,11 @@ pub enum StoreOutcome {
     NotConfigured,
 }
 
+/// Stores a discovered profile in both Cognee (if configured) and the local cache.
+///
+/// # Errors
+///
+/// Returns an error if the store request to Cognee fails.
 pub async fn store_profile(profile: &PackageManagerProfile) -> Result<StoreOutcome> {
     // If Cognee isn't configured, we don't treat that as an error, someone can perfectly
     // well use bruh's local package-manager cache before they've ever set up a Cognee key.

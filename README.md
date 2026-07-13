@@ -1,4 +1,4 @@
-![bruh's Signature Image](src/vault/bruh.jpg)
+![bruh's Signature Image](docs/images/bruh.jpg)
 
 
 > ...because your terminal shouldn't have amnesia.
@@ -14,7 +14,7 @@ bruh is a background daemon + CLI that ingests your shell history, package insta
 
 
 Sunday 5th July, 2026; we finally got a smooth prompt and proof of concept.
-![Proof Of Concept](src/vault/proof.jpg)
+![Proof Of Concept](docs/images/proof.jpg)
 
 ---
 
@@ -55,7 +55,7 @@ Going through github, most tools that use Cognee treat it as a vector database t
 
 When you ask "why did I install openssl?", you do not want the document most similar to the word "openssl". You want the causal chain:
 
-![Illustration for a flow](src/vault/flow_1.jpg)
+![Illustration for a flow](docs/images/flow_1.jpg)
 
 This is a **graph traversal**, not vector similarity. Cognee's hybrid graph-vector layer makes it possible.
 
@@ -72,7 +72,7 @@ Without the graph, the causal chain reconstruction that powers bruh's core demo 
 | Windows 10/11 | ✅ Full support |
 | Termux (Android aarch64) | ✅ Full support |
 
-![Unsupported Architectures](src/vault/unarch.jpg)
+![Unsupported Architectures](docs/images/unarch.jpg)
 
 **Note**: 32-bit and less common architectures are not provided with official binaries.
 
@@ -180,7 +180,7 @@ $ bruh managers --learn pnpm
 
 ## Architecture
 
-![bruh architecture](src/vault/arch.jpg)
+![bruh architecture](docs/images/arch.jpg)
 
 **Why NDJSON instead of SQLite for the offline buffer?**
 It allows for zero native compilation and linking complexity, while being human-readable for debugging, append-friendly, and `serde_json` is already in the dependency tree. The buffer does not need query capability, it just needs append and replay.

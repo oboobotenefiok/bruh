@@ -1,7 +1,9 @@
-// This is the discovery module's front door. Everything in here exists to answer one
-// question: "I just saw a command for a package manager I've never heard of, what is it and
-// how does it work?" That's the self-learning piece of the project I mentioned back in
-// main.rs. The submodules below each handle one step of the pipeline.
+//! Self-learning discovery of unknown package managers.
+//!
+//! This is the discovery module's front door. Everything in here exists to answer one
+//! question: "I just saw a command for a package manager I've never heard of, what is it and
+//! how does it work?" That's the self-learning piece of the project I mentioned back in
+//! main.rs. The submodules below each handle one step of the pipeline.
 pub mod cache;
 pub mod extractor;
 pub mod providers;

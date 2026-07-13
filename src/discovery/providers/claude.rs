@@ -1,8 +1,9 @@
-// Last resort in the discovery cascade. Claude usually gives the most reliable structured
-// output of the three, honestly, but it's tried last mainly because of cost and the fact
-// that most people won't have ANTHROPIC_API_KEY set specifically for this side feature when
-// they're already using it elsewhere. If Gemini and Groq both fail or aren't configured,
-// this is the safety net.
+//! The Claude discovery backend -- last resort in the provider cascade.
+//!
+//! Claude usually gives the most reliable structured output of the three, honestly, but
+//! it's tried last mainly because of cost and the fact that most people won't have
+//! ANTHROPIC_API_KEY set specifically for this side feature when they're already using it
+//! elsewhere. If Gemini and Groq both fail or aren't configured, this is the safety net.
 use crate::{
     discovery::extractor::{build_profile, ExtractorBackend},
     events::PackageManagerProfile,
@@ -13,6 +14,7 @@ use serde_json::Value;
 
 // CONFIG-003: resolved key handed in at construction time (config value first,
 // ANTHROPIC_API_KEY env var as fallback), same pattern as GeminiBackend.
+/// The Claude backend for package-manager discovery. See [`ExtractorBackend`].
 pub struct ClaudeBackend {
     pub api_key: Option<String>,
 }
