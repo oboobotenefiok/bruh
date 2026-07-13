@@ -1,0 +1,498 @@
+/* Color theme lifted directly from the bruh buffer-system diagram: warm cream page,
+   dark-brown borders and ink, everything else derived from those two. */
+:root {
+  --cream: #faf3e2;
+  --panel: #fffaf0;
+  --ink: #3c2b1d;
+  --ink-muted: #6b5a45;
+  --brown: #4a3826;
+  --brown-soft: #a68a68;
+  --border: #cbb894;
+  --radius: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--cream);
+  color: var(--ink);
+  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55;
+}
+
+.wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+a {
+  color: inherit;
+}
+
+code, pre {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+
+.site-header {
+  border-bottom: 2px solid var(--border);
+  background: var(--panel);
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.1rem 1.5rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 800;
+  font-size: 1.25rem;
+  text-decoration: none;
+  color: var(--brown);
+}
+
+.brand-mark {
+  font-size: 1.1em;
+}
+
+.brand-mark.small {
+  font-size: 1.4rem;
+}
+
+.site-nav {
+  display: flex;
+  gap: 1.5rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.site-nav a {
+  text-decoration: none;
+  color: var(--ink-muted);
+  transition: color 0.15s ease;
+}
+
+.site-nav a:hover {
+  color: var(--brown);
+}
+
+/* ── Shared section bits ───────────────────────────────────────────── */
+
+section {
+  padding: 4rem 0;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--brown-soft);
+  margin: 0 0 0.75rem;
+}
+
+h1, h2, h3 {
+  color: var(--brown);
+  letter-spacing: -0.02em;
+  margin-top: 0;
+}
+
+h1 {
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+h2 {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+  font-weight: 700;
+}
+
+.section-lede {
+  max-width: 640px;
+  color: var(--ink-muted);
+  font-size: 1.05rem;
+}
+
+/* ── Hero ───────────────────────────────────────────────────────────── */
+
+.hero {
+  padding-top: 4.5rem;
+  text-align: left;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--brown);
+  margin-bottom: 1.4rem;
+}
+
+.badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brown);
+}
+
+.lede {
+  max-width: 640px;
+  font-size: 1.1rem;
+  color: var(--ink-muted);
+  margin: 1.4rem 0 2rem;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-bottom: 2.5rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.8rem 1.4rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  text-decoration: none;
+  border: 2px solid var(--brown);
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.btn-primary {
+  background: var(--brown);
+  color: var(--cream);
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--brown);
+}
+
+.install-peek {
+  background: var(--brown);
+  color: var(--cream);
+  border-radius: var(--radius);
+  padding: 1.4rem 1.6rem;
+  max-width: 640px;
+  overflow-x: auto;
+  font-size: 0.9rem;
+}
+
+.install-peek .comment {
+  color: var(--brown-soft);
+}
+
+/* ── Feature cards ──────────────────────────────────────────────────── */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.2rem;
+  margin-top: 2rem;
+}
+
+.card {
+  border: 2px solid var(--border);
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+}
+
+.card h3 {
+  font-size: 1.05rem;
+  margin-bottom: 0.5rem;
+}
+
+.card p {
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+/* ── Buffer system diagram ──────────────────────────────────────────── */
+
+.buffer-system {
+  border-top: 2px solid var(--border);
+}
+
+.diagram {
+  border: 2px solid var(--border);
+  background: var(--panel);
+  border-radius: 24px;
+  padding: 2rem;
+  margin-top: 2rem;
+}
+
+.diagram-row {
+  display: grid;
+  gap: 1rem;
+}
+
+.diagram-sources,
+.diagram-outcomes {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.diagram-box {
+  border: 2px solid var(--border);
+  background: var(--cream);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.3rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+}
+
+.diagram-box strong {
+  display: block;
+  font-size: 1rem;
+  color: var(--brown);
+}
+
+.diagram-box p {
+  margin: 0.2rem 0 0;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.diagram-box ol {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.diagram-box-wide {
+  grid-column: 1 / -1;
+}
+
+.diagram-box-accent {
+  background: var(--brown);
+  color: var(--cream);
+  justify-content: center;
+  align-items: center;
+}
+
+.diagram-box-accent strong {
+  color: var(--cream);
+}
+
+.diagram-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--brown);
+  color: var(--cream);
+}
+
+.diagram-icon-dark {
+  background: var(--cream);
+  color: var(--brown);
+}
+
+.diagram-icon-ok,
+.diagram-icon-fail {
+  background: var(--brown);
+  color: var(--cream);
+}
+
+.diagram-arrow {
+  width: 2px;
+  height: 1.5rem;
+  background: var(--border);
+  margin: 0 auto;
+}
+
+.diagram-outcomes {
+  align-items: stretch;
+}
+
+/* ── Architecture / status ──────────────────────────────────────────── */
+
+.architecture {
+  border-top: 2px solid var(--border);
+}
+
+.architecture-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 2.5rem;
+  align-items: start;
+}
+
+.status-box {
+  border: 2px solid var(--border);
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 1.6rem;
+}
+
+.status-box ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--ink-muted);
+}
+
+.status-box li {
+  margin-bottom: 0.5rem;
+}
+
+/* ── Install CTA ────────────────────────────────────────────────────── */
+
+.install {
+  border-top: 2px solid var(--border);
+}
+
+.install-box {
+  border: 2px solid var(--border);
+  background: var(--brown);
+  color: var(--cream);
+  border-radius: 24px;
+  padding: 2.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.install-box h2 {
+  color: var(--cream);
+  margin-bottom: 0.4rem;
+}
+
+.install-box p {
+  color: var(--brown-soft);
+  margin: 0;
+}
+
+.install-box .btn-primary {
+  background: var(--cream);
+  color: var(--brown);
+  border-color: var(--cream);
+}
+
+/* ── Footer ─────────────────────────────────────────────────────────── */
+
+.site-footer {
+  border-top: 2px solid var(--border);
+  background: var(--panel);
+  padding: 3rem 0 1.5rem;
+}
+
+.footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2.5rem;
+  padding-bottom: 2rem;
+}
+
+.footer-brand {
+  max-width: 320px;
+}
+
+.footer-brand > span {
+  font-weight: 800;
+  color: var(--brown);
+  margin-left: 0.4rem;
+}
+
+.footer-brand p {
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+  margin-top: 0.6rem;
+}
+
+.footer-links {
+  display: flex;
+  gap: 3rem;
+}
+
+.footer-heading {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: var(--brown-soft);
+  margin: 0 0 0.5rem;
+}
+
+.footer-links a {
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.footer-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a7c59;
+}
+
+.footer-bottom {
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  padding-top: 1.2rem;
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+
+@media (max-width: 720px) {
+  .architecture-grid {
+    grid-template-columns: 1fr;
+  }
+  .site-nav {
+    gap: 1rem;
+  }
+}

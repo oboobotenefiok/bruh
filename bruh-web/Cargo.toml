@@ -1,0 +1,35 @@
+[package]
+name = "bruh-web"
+version = "0.1.0"
+edition = "2021"
+description = "The bruh landing site: what bruh is, how the buffer system works, and how to install it."
+publish = false
+
+# Deliberately its own crate rather than a workspace member of the root `bruh` binary: the
+# website has nothing to do with the daemon/CLI at runtime, and keeping it separate means a
+# `cargo build` at the repo root is completely unaffected by anything in here, and vice
+# versa. `cd web && cargo run` is all this needs.
+[[bin]]
+name = "bruh-web"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.4", features = ["fs", "compression-gzip", "trace"] }
+maud = { version = "0.25", features = ["axum"] }
+sqlx = { version = "0.6", default-features = false, features = ["sqlite", "runtime-tokio-rustls", "macros"] }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+# Transitive pin, not used directly: newer `idna` (pulled in via `url`, itself pulled in by
+# tower-http/sqlx) depends on `idna_adapter`, which requires Cargo's edition2024 resolver
+# support (stable since Cargo 1.85). Pinning to the last release before that split keeps
+# this buildable on an older toolchain without needing a toolchain upgrade just to compile
+# a landing page.
+idna = "=0.5.0"
+url = "=2.4.1"
+async-compression = "=0.4.6"
+unicode-segmentation = "=1.11.0"
