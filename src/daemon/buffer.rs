@@ -286,7 +286,14 @@ fn cursor_file_path(config: &Config) -> PathBuf {
 #[derive(Debug)]
 pub struct PendingBatch {
     pub events: Vec<Event>,
+    /// How many of `events` (counted from the front) came from the backlog file, the rest
+    /// came from the primary buffer. Needed by nack_events() to treat the two halves
+    /// differently, see its doc comment for why.
+    backlog_count: usize,
     corrupt_skipped: usize,
+    /// The backlog cursor's value *before* this pop consumed anything from it, kept
+    /// separately from new_backlog_offset so a nack can put it back exactly where it was.
+    prior_backlog_offset: u64,
     new_main_offset: u64,
     new_backlog_offset: u64,
 }
@@ -317,9 +324,11 @@ pub async fn pop_events() -> Result<PendingBatch> {
     let mut cursors = cursor::load_buffer_cursors(&cursor_path).await;
     reset_offset_on_shrink(&backlog_path, &mut cursors.backlog_offset, &mut cursors.backlog_len).await;
     reset_offset_on_shrink(&main_path, &mut cursors.main_offset, &mut cursors.main_len).await;
+    let prior_backlog_offset = cursors.backlog_offset;
 
     let (mut events, mut corrupt, new_backlog_offset) =
         read_events_from(&backlog_path, cursors.backlog_offset, POP_LIMIT).await?;
+    let backlog_count = events.len();
 
     let remaining = POP_LIMIT - events.len();
     let (new_main_offset, main_corrupt) = if remaining > 0 {
@@ -334,7 +343,9 @@ pub async fn pop_events() -> Result<PendingBatch> {
 
     Ok(PendingBatch {
         events,
+        backlog_count,
         corrupt_skipped: corrupt,
+        prior_backlog_offset,
         new_main_offset,
         new_backlog_offset,
     })
@@ -347,18 +358,31 @@ pub async fn ack_events(batch: PendingBatch) -> Result<()> {
     commit_cursors(&config, batch.new_main_offset, batch.new_backlog_offset).await
 }
 
-/// Commits a batch's cursor advance after its events failed to send, first appending them
-/// to the tail of the backlog file so they're retried in FIFO order behind whatever backlog
-/// entries were already waiting. Advancing the cursor past the events' *original* position
-/// (in whichever file they were popped from) is what keeps them from being read, and copied
-/// into the backlog, a second time on the next tick, a durable copy of each event exists in
-/// exactly one place on disk at any moment: either still unconsumed in its original file, or
-/// waiting at the tail of the backlog. Never both, which is what keeps sends from duplicating.
+/// Commits a batch's cursor advance after its events failed to send. The two halves of the
+/// batch are handled differently:
+///
+/// - Events that came from the *primary buffer* are newly-failed: this is their first trip
+///   through Cognee. They get appended to the tail of the backlog (their new durable home)
+///   and the main cursor advances past them, since a copy of them now lives in the backlog.
+/// - Events that came from the *backlog itself* were already failed events being retried.
+///   They're already sitting on disk in the backlog, re-appending another copy of them
+///   would just grow the file with a duplicate every single time a retry fails, without
+///   ever actually being needed, the original copy is still sitting right there. So for
+///   this half, nothing is written and the backlog cursor is simply put back to where it
+///   was before this pop (`prior_backlog_offset`), leaving them exactly where they already
+///   were for the next retry to pick back up.
+///
+/// This was previously not the case: every failed batch had its *entire* contents
+/// re-appended to the backlog regardless of where it came from, so a backlog entry that
+/// failed twice in a row ended up with two copies of itself on disk, three copies after a
+/// third failure, and so on for as long as an outage lasted, unbounded growth for events
+/// that were already durably stored and needed no second copy at all.
 pub async fn nack_events(batch: PendingBatch) -> Result<()> {
     let config = Config::load()?;
     let backlog_path = backlog_path(&config);
-    append_events(&backlog_path, &batch.events).await?;
-    commit_cursors(&config, batch.new_main_offset, batch.new_backlog_offset).await
+    let newly_failed = &batch.events[batch.backlog_count..];
+    append_events(&backlog_path, newly_failed).await?;
+    commit_cursors(&config, batch.new_main_offset, batch.prior_backlog_offset).await
 }
 
 async fn commit_cursors(config: &Config, main_offset: u64, backlog_offset: u64) -> Result<()> {
@@ -850,7 +874,9 @@ mod tests {
     fn pending_batch_reports_corrupt_only_state() {
         let empty_clean = PendingBatch {
             events: Vec::new(),
+            backlog_count: 0,
             corrupt_skipped: 0,
+            prior_backlog_offset: 0,
             new_main_offset: 0,
             new_backlog_offset: 0,
         };
@@ -859,7 +885,9 @@ mod tests {
 
         let empty_corrupt = PendingBatch {
             events: Vec::new(),
+            backlog_count: 0,
             corrupt_skipped: 2,
+            prior_backlog_offset: 0,
             new_main_offset: 40,
             new_backlog_offset: 0,
         };
@@ -867,12 +895,84 @@ mod tests {
 
         let non_empty = PendingBatch {
             events: vec![sample_event()],
+            backlog_count: 0,
             corrupt_skipped: 0,
+            prior_backlog_offset: 0,
             new_main_offset: 20,
             new_backlog_offset: 0,
         };
         assert!(!non_empty.is_empty());
         assert!(!non_empty.has_only_corrupt_lines());
+    }
+
+    // ── BUFFER-008: nack must not duplicate already-backlogged events ──────────
+
+    #[tokio::test]
+    async fn nack_of_backlog_only_batch_does_not_rewrite_backlog() {
+        let dir = tempfile::tempdir().unwrap();
+        let backlog = dir.path().join("buffer.backlog.ndjson");
+        write_ndjson(&backlog, 3);
+        let original_len = std::fs::metadata(&backlog).unwrap().len();
+
+        // Simulate what pop_events() would have produced: a batch made up entirely of
+        // backlog-sourced events (backlog_count == events.len()), with a failed send.
+        let (events, _, new_backlog_offset) = read_events_from(&backlog, 0, 10).await.unwrap();
+        let batch = PendingBatch {
+            backlog_count: events.len(),
+            events,
+            corrupt_skipped: 0,
+            prior_backlog_offset: 0,
+            new_main_offset: 0,
+            new_backlog_offset,
+        };
+
+        // The fix under test: nothing gets appended for the backlog-sourced portion, so
+        // the file should be byte-for-byte unchanged after a failed retry.
+        let newly_failed = &batch.events[batch.backlog_count..];
+        append_events(&backlog, newly_failed).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&backlog).unwrap().len(),
+            original_len,
+            "backlog-sourced events must not be re-appended to the backlog on failure"
+        );
+
+        // And the offset that would actually get committed is prior_backlog_offset (0),
+        // not new_backlog_offset (past the 3 events), so the next pop reads them again
+        // rather than skipping past them.
+        assert_eq!(batch.prior_backlog_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn nack_of_mixed_batch_only_appends_the_main_sourced_half() {
+        let dir = tempfile::tempdir().unwrap();
+        let backlog = dir.path().join("buffer.backlog.ndjson");
+        let main = dir.path().join("buffer.ndjson");
+        write_ndjson(&backlog, 2);
+        write_ndjson(&main, 2);
+        let backlog_len_before = std::fs::metadata(&backlog).unwrap().len();
+
+        let (mut events, _, _) = read_events_from(&backlog, 0, 10).await.unwrap();
+        let backlog_count = events.len();
+        let (main_events, _, _) = read_events_from(&main, 0, 10).await.unwrap();
+        events.extend(main_events);
+
+        // Only the main-sourced half (everything after backlog_count) should ever reach
+        // append_events, mirroring exactly what nack_events() does internally.
+        let newly_failed = &events[backlog_count..];
+        assert_eq!(newly_failed.len(), 2, "only the 2 main-sourced events, not all 4");
+        append_events(&backlog, newly_failed).await.unwrap();
+
+        let (all_in_backlog, _, _) = read_events_from(&backlog, 0, 100).await.unwrap();
+        assert_eq!(
+            all_in_backlog.len(),
+            4,
+            "backlog should now hold its original 2 plus the 2 newly-failed main events, \
+             not a duplicated copy of its original 2 as well"
+        );
+        assert!(
+            std::fs::metadata(&backlog).unwrap().len() > backlog_len_before,
+            "file should have grown by exactly the newly appended main events"
+        );
     }
 }
 
