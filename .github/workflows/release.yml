@@ -5,7 +5,6 @@ on:
     tags:
       - 'v*' # Triggers on tags like v0.1.0, v1.2.3, etc.
 
-# ADD THIS: Explicit permissions for creating releases
 permissions:
   contents: write
 
@@ -133,18 +132,9 @@ jobs:
         if: matrix.target == 'aarch64-linux-android'
         run: cargo install cargo-ndk
 
-      # This is the fix for the Termux/Android target. Cross-compiling to Android needs
-      # the NDK's own clang-based toolchain for the final link, plain `cargo build --target
-      # aarch64-linux-android` with no NDK setup fails at link time, there's no aarch64
-      # Android linker on a bare ubuntu-latest runner otherwise. cargo-ndk is the standard
-      # tool for this, it finds the NDK and wires up the right linker/sysroot for us.
-      # ubuntu-latest ships with the Android SDK/NDK preinstalled and exposes its path via
-      # ANDROID_NDK_LATEST_HOME, this makes sure cargo-ndk actually finds it rather than
-      # relying purely on its own auto-detection.
+      # FIXED: Removed ANDROID_NDK_HOME env var to let cargo-ndk auto-detect from ANDROID_NDK_ROOT
       - name: Build release binary (Termux/Android via cargo-ndk)
         if: matrix.target == 'aarch64-linux-android'
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         # --platform 24 is Android 7.0, the minimum API level current mainline Termux
         # targets. Bump this if bruh ever needs to support older Termux/Android releases.
         run: cargo ndk --target aarch64-linux-android --platform 24 build --release
