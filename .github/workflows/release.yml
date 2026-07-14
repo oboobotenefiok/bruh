@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*' # Triggers on tags like v0.1.0, v1.2.3, etc.
 
+# ADD THIS: Explicit permissions for creating releases
+permissions:
+  contents: write
+
 jobs:
   # Runs before anything gets built or published, so a broken build or a failing test can
   # never end up as a tagged release. Testing on all three OS families (not just
