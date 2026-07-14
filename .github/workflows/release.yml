@@ -68,7 +68,9 @@ jobs:
           generate_release_notes: true
 
   build-and-upload:
-    needs: create-release
+    # CHANGED: Now depends on 'test' instead of 'create-release' so it runs in parallel
+    # This allows multiple build jobs to upload to the release concurrently
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
