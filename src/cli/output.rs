@@ -324,4 +324,3 @@ pub fn print_watch_memory(header: &str, body: &str) {
     };
     println!("{}", close);
 }
-

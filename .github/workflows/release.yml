@@ -14,6 +14,13 @@ jobs:
   # (and separately, a macOS) runner at least once.
   test:
     strategy:
+      # Without this, GitHub's default fail-fast behavior cancels the other two OSes the
+      # moment one of them fails, so if ubuntu-latest fails first you never find out
+      # whether windows-latest or macos-latest would have passed on their own. That
+      # defeats the purpose of testing on all three (see the note above about the
+      # #[cfg(windows)] pollers), so it's turned off here, matching build-and-upload
+      # below, which already does the same thing for the same reason.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}

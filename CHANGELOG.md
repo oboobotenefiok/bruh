@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Release workflow's `test` job now passes `cargo fmt --check`. Formatting had drifted from what `rustfmt` expects across most of the source tree, which was failing every OS in the matrix before `cargo test` ever got a chance to run.
+
+### Changed
+- The `test` job's OS matrix now sets `fail-fast: false`, matching `build-and-upload` below it. A failure on one OS no longer cancels the other two mid-run, so a Windows- or macOS-specific problem can't hide behind an unrelated Ubuntu failure.
+
 ### Added
 - Ongoing improvements, documentation updates, and maintenance.
 

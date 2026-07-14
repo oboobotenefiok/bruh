@@ -16,8 +16,8 @@ mod packages;
 // here so error text captured by `bruh watch` gets the exact same secret-filtering as the
 // passive shell-history poller, one implementation, not two that could drift apart.
 pub(crate) mod shell;
-use crate::{cli::Config, cognee::remember, events::Event};
 use crate::daemon::buffer::get_backoff_seconds;
+use crate::{cli::Config, cognee::remember, events::Event};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use log::{debug, error, info, warn};
@@ -239,7 +239,7 @@ pub async fn run() -> Result<()> {
                         error!("Force flush signal check failed: {}", e);
                     }
                 }
-                
+
                 if !event_queue.is_empty() {
                     hour_flushed_events += do_flush(
                         &mut event_queue, &mut last_flush_status, &mut last_flush_time
@@ -360,7 +360,11 @@ async fn drain_buffer() -> u64 {
 
 /// Flushes the in-memory event queue to Cognee, returning how many events were
 /// successfully sent (0 on backoff or failure), for the caller's hourly summary counter.
-async fn do_flush(queue: &mut Vec<Event>, status: &mut String, time: &mut Option<DateTime<Utc>>) -> u64 {
+async fn do_flush(
+    queue: &mut Vec<Event>,
+    status: &mut String,
+    time: &mut Option<DateTime<Utc>>,
+) -> u64 {
     // CORE-005: do_flush() used to attempt a network call on every single tick
     // regardless of how recently Cognee had failed, while buffer.rs separately
     // tracked its own backoff for buffer replay, two uncoordinated retry loops
@@ -556,4 +560,3 @@ pub(crate) async fn check_force_flush_signal(data_dir: &std::path::Path) -> Resu
     info!("Backoff reset successfully. Flush will be attempted.");
     Ok(())
 }
-

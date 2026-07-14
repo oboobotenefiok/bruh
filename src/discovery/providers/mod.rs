@@ -33,4 +33,3 @@ static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 pub(crate) fn http_client() -> &'static reqwest::Client {
     SHARED_CLIENT.get_or_init(reqwest::Client::new)
 }
-

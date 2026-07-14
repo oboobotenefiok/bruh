@@ -185,4 +185,3 @@ mod tests {
         assert_eq!(active_provider(&priority, &available), Some("gemini"));
     }
 }
-

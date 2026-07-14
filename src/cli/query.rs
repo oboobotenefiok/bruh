@@ -175,4 +175,3 @@ mod tests {
         assert!(!is_exit_command(""));
     }
 }
-

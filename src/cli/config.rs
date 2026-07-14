@@ -174,7 +174,7 @@ impl Config {
     // is saved on disk (or defaults if nothing's saved yet), then layers env var overrides
     // on top so BRUH_* vars always win, useful for one-off overrides without touching the
     // saved config file, like in CI or a quick debugging session.
-/// Loads the saved config from disk (or defaults if none exists yet), then layers any
+    /// Loads the saved config from disk (or defaults if none exists yet), then layers any
     /// `BRUH_*` environment variable overrides on top.
     pub fn load() -> Result<Self> {
         let mut cfg = Self::load_from_disk()?;
@@ -442,4 +442,3 @@ impl Config {
         self.validate()
     }
 }
-

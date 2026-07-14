@@ -26,21 +26,25 @@ const STALE_MULTIPLIER: u64 = 3;
 pub fn force_flush() -> Result<()> {
     let data_dir = Config::data_dir()?;
     let signal_path = data_dir.join("flush_now");
-    
+
     // Create the directory if it doesn't exist
     if let Some(parent) = signal_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    
+
     // Write the signal file with the current timestamp
     let timestamp = Utc::now().to_rfc3339();
     std::fs::write(&signal_path, timestamp)?;
-    
+
     println!();
     println!("  {} Force flush signal sent to daemon.", green("✓"));
-    println!("  {} Check status with: {}", dim("→"), bold("bruh daemon --status"));
+    println!(
+        "  {} Check status with: {}",
+        dim("→"),
+        bold("bruh daemon --status")
+    );
     println!();
-    
+
     Ok(())
 }
 
@@ -149,7 +153,7 @@ pub fn run() -> Result<()> {
             n.to_string()
         };
         println!("  {}  Buffered (offline):{}", dim("│"), label);
-        
+
         // Show recommendation if buffer is getting large
         if n > 100 {
             println!(
@@ -178,7 +182,7 @@ pub fn run() -> Result<()> {
             orange(st)
         };
         println!("  {}  Flush status:      {}", dim("│"), formatted);
-        
+
         // Show recommendation for failed flushes
         if st == "failed" {
             println!(
@@ -221,4 +225,3 @@ pub fn run() -> Result<()> {
     print_footer();
     Ok(())
 }
-

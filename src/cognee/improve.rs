@@ -83,4 +83,3 @@ pub async fn improve(background: bool) -> Result<(bool, Option<String>)> {
 
     Ok((true, text))
 }
-

@@ -108,4 +108,3 @@ fn search_result_to_text(v: &Value) -> Option<String> {
         other => serde_json::to_string_pretty(other).ok(),
     }
 }
-

@@ -74,12 +74,12 @@ fn save_retry_state() {
         let state = RETRY_STATE
             .lock()
             .map_err(|_| anyhow::anyhow!("failed to lock retry state"))?;
-        
+
         let persistent = PersistentRetryState {
             backoff_secs: state.backoff_secs,
             last_attempt: state.last_attempt.map(|_| chrono::Utc::now()),
         };
-        
+
         let path = retry_state_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -95,14 +95,14 @@ fn load_retry_state() {
         if !path.exists() {
             return Ok(());
         }
-        
+
         let content = std::fs::read_to_string(path)?;
         let persistent: PersistentRetryState = serde_json::from_str(&content)?;
-        
+
         let mut state = RETRY_STATE
             .lock()
             .map_err(|_| anyhow::anyhow!("failed to lock retry state"))?;
-        
+
         state.backoff_secs = persistent.backoff_secs;
         state.last_attempt = persistent.last_attempt.map(|dt| {
             // Convert from UTC datetime back to Instant
@@ -115,7 +115,7 @@ fn load_retry_state() {
                 Instant::now()
             }
         });
-        
+
         Ok(())
     })();
 }
@@ -150,7 +150,7 @@ fn init_persistent_state() {
 /// Whether the shared retry gate allows an attempt right now, based on the current backoff.
 pub(crate) fn should_retry() -> bool {
     init_persistent_state();
-    
+
     let state = RETRY_STATE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -200,7 +200,7 @@ pub(crate) fn record_success() {
 /// Doubles the shared backoff (capped) and marks the failed attempt's time.
 pub(crate) fn record_failure() {
     init_persistent_state();
-    
+
     let mut state = RETRY_STATE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -332,7 +332,12 @@ pub async fn pop_events() -> Result<PendingBatch> {
     let cursor_path = cursor_file_path(&config);
 
     let mut cursors = cursor::load_buffer_cursors(&cursor_path).await;
-    reset_offset_on_shrink(&backlog_path, &mut cursors.backlog_offset, &mut cursors.backlog_len).await;
+    reset_offset_on_shrink(
+        &backlog_path,
+        &mut cursors.backlog_offset,
+        &mut cursors.backlog_len,
+    )
+    .await;
     reset_offset_on_shrink(&main_path, &mut cursors.main_offset, &mut cursors.main_len).await;
     let prior_backlog_offset = cursors.backlog_offset;
 
@@ -423,7 +428,10 @@ async fn commit_cursors(config: &Config, main_offset: u64, backlog_offset: u64) 
 /// cursor::read_new_bytes, applied here since the buffer queue manages its own offsets by
 /// hand instead of going through that helper.
 async fn reset_offset_on_shrink(path: &Path, offset: &mut u64, persisted_len: &mut u64) {
-    let current_len = tokio::fs::metadata(path).await.map(|m| m.len()).unwrap_or(0);
+    let current_len = tokio::fs::metadata(path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
     if current_len < *persisted_len {
         warn!(
             "{:?} shrank since the cursor was last saved ({} -> {} bytes); resetting its \
@@ -440,7 +448,11 @@ async fn reset_offset_on_shrink(path: &Path, offset: &mut u64, persisted_len: &m
 /// (valid or corrupt) count toward the returned offset, a line past the `limit`th valid
 /// event is left untouched for the next pop rather than being read and discarded, so the
 /// next tick picks up exactly where this one stopped.
-async fn read_events_from(path: &Path, offset: u64, limit: usize) -> Result<(Vec<Event>, usize, u64)> {
+async fn read_events_from(
+    path: &Path,
+    offset: u64,
+    limit: usize,
+) -> Result<(Vec<Event>, usize, u64)> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<(Vec<Event>, usize, u64)> {
         use std::io::{Read, Seek, SeekFrom};
@@ -625,11 +637,11 @@ fn parse_buffer_line(trimmed: &str) -> Option<Event> {
 /// BUFFER-004: get the current backoff seconds for health reporting
 pub(crate) fn get_backoff_seconds() -> u64 {
     init_persistent_state();
-    
+
     let state = RETRY_STATE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    
+
     match state.last_attempt {
         None => 0,
         Some(t) => {
@@ -731,7 +743,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(corrupt, 0);
     }
-    
+
     #[test]
     fn test_persistent_retry_state_roundtrip() {
         let state = PersistentRetryState {
@@ -839,10 +851,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("backlog.ndjson");
         append_events(&p, &[sample_event()]).await.unwrap();
-        append_events(&p, &[sample_event(), sample_event()]).await.unwrap();
+        append_events(&p, &[sample_event(), sample_event()])
+            .await
+            .unwrap();
 
         let (events, corrupt, _) = read_events_from(&p, 0, 10).await.unwrap();
-        assert_eq!(events.len(), 3, "both append calls should land in the same file");
+        assert_eq!(
+            events.len(),
+            3,
+            "both append calls should land in the same file"
+        );
         assert_eq!(corrupt, 0);
     }
 
@@ -859,9 +877,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(offset, 0, "a fully-consumed file should reset its cursor to 0");
+        assert_eq!(
+            offset, 0,
+            "a fully-consumed file should reset its cursor to 0"
+        );
         assert_eq!(persisted_len, 0);
-        assert_eq!(std::fs::metadata(&p).unwrap().len(), 0, "file should be truncated");
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().len(),
+            0,
+            "file should be truncated"
+        );
     }
 
     #[tokio::test]
@@ -876,8 +901,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(offset, 5, "offset should be untouched when not fully consumed");
-        assert!(std::fs::metadata(&p).unwrap().len() > 0, "file should not be truncated");
+        assert_eq!(
+            offset, 5,
+            "offset should be untouched when not fully consumed"
+        );
+        assert!(
+            std::fs::metadata(&p).unwrap().len() > 0,
+            "file should not be truncated"
+        );
     }
 
     #[test]
@@ -969,7 +1000,11 @@ mod tests {
         // Only the main-sourced half (everything after backlog_count) should ever reach
         // append_events, mirroring exactly what nack_events() does internally.
         let newly_failed = &events[backlog_count..];
-        assert_eq!(newly_failed.len(), 2, "only the 2 main-sourced events, not all 4");
+        assert_eq!(
+            newly_failed.len(),
+            2,
+            "only the 2 main-sourced events, not all 4"
+        );
         append_events(&backlog, newly_failed).await.unwrap();
 
         let (all_in_backlog, _, _) = read_events_from(&backlog, 0, 100).await.unwrap();
@@ -985,4 +1020,3 @@ mod tests {
         );
     }
 }
-

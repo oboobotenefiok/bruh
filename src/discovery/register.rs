@@ -53,4 +53,3 @@ pub async fn store_profile(profile: &PackageManagerProfile) -> Result<StoreOutco
 
     Ok(StoreOutcome::Stored)
 }
-

@@ -61,4 +61,3 @@ fn extract_narrative(v: &serde_json::Value) -> String {
     }
     serde_json::to_string_pretty(v).unwrap_or_else(|_| "No context available.".into())
 }
-

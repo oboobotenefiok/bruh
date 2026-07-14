@@ -62,4 +62,3 @@ pub async fn run() -> Result<()> {
     print_footer();
     Ok(())
 }
-

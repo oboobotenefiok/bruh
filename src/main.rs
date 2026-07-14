@@ -346,7 +346,10 @@ fn print_help() {
     row("init", "Set up bruh (API keys, git hook, autostart)");
     row("daemon", "Start background daemon");
     row("daemon --status", "Show daemon health");
-    row("daemon --flush-now", "Force a flush and reset backoff state");
+    row(
+        "daemon --flush-now",
+        "Force a flush and reset backoff state",
+    );
     row("query <text> [--raw] [--interactive]", "Query memory");
     row("explain", "Session handoff brief for current directory");
     row(
@@ -510,4 +513,3 @@ mod tests {
         assert!(!FLAGS_FOR_BARE_CMD.iter().any(|(cmd, _)| *cmd == "watch"));
     }
 }
-

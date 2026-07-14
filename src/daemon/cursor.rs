@@ -201,4 +201,3 @@ mod tests {
         assert_eq!(content, "short\n");
     }
 }
-

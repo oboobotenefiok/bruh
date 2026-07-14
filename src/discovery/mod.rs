@@ -86,4 +86,3 @@ pub async fn discover_manager(manager_name: &str) -> Result<PackageManagerProfil
     info!("Discovered: {}", manager_name);
     Ok(profile)
 }
-

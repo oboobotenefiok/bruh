@@ -805,7 +805,10 @@ mod tests {
     async fn source_meta_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("bash_history.meta.json");
-        let meta = SourceMeta { file_size: 500, mtime_secs: 12345 };
+        let meta = SourceMeta {
+            file_size: 500,
+            mtime_secs: 12345,
+        };
         write_source_meta(&p, &meta).await.unwrap();
         let loaded = read_source_meta(&p).await;
         assert_eq!(loaded.file_size, 500);
@@ -826,9 +829,15 @@ mod tests {
         let p = dir.path().join(".bash_history");
         std::fs::write(&p, "a\nb\nc\n").unwrap();
 
-        let previous = SourceMeta { file_size: 100, mtime_secs: 0 };
+        let previous = SourceMeta {
+            file_size: 100,
+            mtime_secs: 0,
+        };
         let (shrank, current) = file_shrank_since(&p, &previous).await;
-        assert!(shrank, "current 6-byte file is smaller than the recorded 100 bytes");
+        assert!(
+            shrank,
+            "current 6-byte file is smaller than the recorded 100 bytes"
+        );
         assert_eq!(current.file_size, 6);
     }
 
@@ -838,7 +847,10 @@ mod tests {
         let p = dir.path().join(".bash_history");
         std::fs::write(&p, "a\nb\nc\n").unwrap();
 
-        let previous = SourceMeta { file_size: 3, mtime_secs: 0 };
+        let previous = SourceMeta {
+            file_size: 3,
+            mtime_secs: 0,
+        };
         let (shrank, _) = file_shrank_since(&p, &previous).await;
         assert!(!shrank, "file grew, that's not a truncation");
     }
@@ -870,7 +882,11 @@ mod tests {
         let first_pass = rt
             .block_on(poll_shell_history_with_home(&config, &home))
             .unwrap();
-        assert_eq!(first_pass.len(), 3, "all three commands ingested the first time");
+        assert_eq!(
+            first_pass.len(),
+            3,
+            "all three commands ingested the first time"
+        );
 
         // Simulate HISTFILESIZE trimming the file down to just its last line right around
         // a daemon restart, the exact scenario from the bug report: the surviving content
@@ -899,7 +915,11 @@ mod tests {
         let third_pass = rt
             .block_on(poll_shell_history_with_home(&config, &home))
             .unwrap();
-        assert_eq!(third_pass.len(), 1, "genuinely new command after the trim should surface");
+        assert_eq!(
+            third_pass.len(),
+            1,
+            "genuinely new command after the trim should surface"
+        );
         if let Event::ShellCommand(sc) = &third_pass[0] {
             assert_eq!(sc.command, "cargo clippy");
         } else {
@@ -907,4 +927,3 @@ mod tests {
         }
     }
 }
-
