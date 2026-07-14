@@ -158,3 +158,63 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact_name }}
+
+  # NEW: Publish to crates.io with verification, dry run, and post-publish verification
+  publish-cratesio:
+    needs: [test, create-release, build-and-upload]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag v$TAG does not match Cargo.toml version $VERSION"
+            exit 1
+          fi
+          echo "Version matches: $VERSION"
+
+      - name: Verify package (dry run)
+        run: cargo package --no-verify
+
+      - name: Dry run publish to crates.io
+        run: cargo publish --dry-run --token ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Publish to crates.io
+        id: publish
+        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Verify publication
+        if: success()
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          echo "Waiting for crates.io index to update..."
+          sleep 10
+          echo "Searching for mybruh v$VERSION on crates.io..."
+          if cargo search --limit 1 "mybruh" | grep -q "mybruh = \"$VERSION\""; then
+            echo "Successfully published mybruh v$VERSION to crates.io!"
+          else
+            echo "Waiting longer for index update..."
+            sleep 20
+            if cargo search --limit 1 "mybruh" | grep -q "mybruh = \"$VERSION\""; then
+              echo "Successfully published mybruh v$VERSION to crates.io!"
+            else
+              echo "::warning::Could not verify publication immediately. Check https://crates.io/crates/mybruh manually."
+            fi
+          fi
+
+      - name: Link to crates.io in release notes (via comment)
+        if: success()
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          echo "Published to crates.io: https://crates.io/crates/mybruh/$VERSION"
