@@ -17,7 +17,7 @@ categories = ["command-line-utilities", "development-tools"]
 # The packaged crate should ship source and docs, not the screenshots/diagrams used in the
 # README. Those live under docs/images and are referenced by GitHub-relative links, they
 # don't need to travel inside the .crate file that cargo install/cargo add download.
-exclude = ["docs/images/*", "examples/*", "hooks/*", ".github/*", "deep.sh", "deep.rs", "SECURITY.md", "ROAD_MAP.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "CHANGELOG.md", "install.sh", "install.ps1"]
+exclude = ["docs/images/*", "examples/*", "hooks/*", ".github/*", "deep.sh", "deep.rs", "SECURITY.md", "ROAD_MAP.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "install.sh", "install.ps1"]
 
 [package.metadata.docs.rs]
 all-features = true
