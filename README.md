@@ -76,7 +76,6 @@ Without the graph, the causal chain reconstruction that powers bruh's core demo 
 
 **Note**: 32-bit and less common architectures are not provided with official binaries.
 
-Always wrap your query in double quotes (`bruh "what did I break yesterday"`), otherwise your shell will split it into separate words before bruh ever sees it, and any special characters in it (`!`, `*`, `?`, `$`, and friends) may get interpreted by the shell instead of reaching your query.
 ---
 
 ## Installation
@@ -138,6 +137,9 @@ bruh stats          # productivity summary
 | `bruh config list\|get\|set` | Manage configuration |
 
 ---
+
+
+Quick one on this one: if you're using the query without quotes, avoid using punctuations throughout the query as your shell may mistake it for another command. Cognee can intelligently infer your queries without the punctuations.
 
 Before I continue with my favourite feature in this project, Here is a "linked-list" of my daily log on X(Formerly Twitter) from day one to seven:
 
